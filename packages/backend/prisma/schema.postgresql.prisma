@@ -1,0 +1,442 @@
+// This is your Prisma schema file
+// Learn more about it at https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  CITIZEN
+  AUTHORITY
+  ADMIN
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum AuthorityAppStatus {
+  PENDING_VERIFICATION
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  SUSPENDED
+  REVOKED
+}
+
+enum ReportStatus {
+  REPORTED
+  UNDER_REVIEW
+  ASSIGNED
+  IN_PROGRESS
+  RESOLUTION_CLAIMED
+  VERIFIED_RESOLVED
+  DISPUTED
+  REOPENED
+  REJECTED
+  DUPLICATE
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IssueCategory {
+  ROAD_DAMAGE
+  STREETLIGHT
+  GARBAGE
+  WATER_LEAKAGE
+  DRAINAGE
+  TRAFFIC_SIGNAL
+  PUBLIC_INFRASTRUCTURE
+  OTHER
+}
+
+// ─── User ────────────────────────────────────────────────────────────────────
+
+model User {
+  id                  String        @id @default(uuid())
+  email               String        @unique
+  passwordHash        String
+  role                UserRole      @default(CITIZEN)
+  status              AccountStatus @default(ACTIVE)
+  emailVerified       Boolean       @default(false)
+  emailVerifyToken    String?
+  passwordResetToken  String?
+  passwordResetExpiry DateTime?
+  mfaEnabled          Boolean       @default(false)
+  mfaSecret           String?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  citizenProfile        CitizenProfile?
+  authorityProfile      AuthorityProfile?
+  authorityApplication  AuthorityApplication?
+  reports               Report[]            @relation("ReporterReports")
+  assignedReports       Report[]            @relation("AssignedReports")
+  statusHistories       ReportStatusHistory[]
+  comments              ReportComment[]
+  supportedReports      ReportSupport[]
+  followedIssues        FollowedIssue[]
+  notifications         Notification[]
+  auditLogs             AuditLog[]
+  gamificationPoints    GamificationPoint[]
+  userBadges            UserBadge[]
+  verificationResponses VerificationResponse[]
+  resolutionEvidences   ResolutionEvidence[]
+}
+
+// ─── CitizenProfile ───────────────────────────────────────────────────────────
+
+model CitizenProfile {
+  id          String  @id @default(uuid())
+  userId      String  @unique
+  displayName String
+  phone       String?
+  city        String?
+  state       String?
+  bio         String?
+  avatarUrl   String?
+  totalPoints Int     @default(0)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─── AuthorityApplication ─────────────────────────────────────────────────────
+
+model AuthorityApplication {
+  id                       String             @id @default(uuid())
+  userId                   String             @unique
+  applicantName            String
+  designation              String
+  department               String
+  officialEmail            String
+  workPhone                String?
+  officeLocation           String
+  requestedJurisdiction    String
+  requestedResponsibilities String
+  supervisorName           String?
+  supervisorContact        String?
+  evidenceDocumentUrl      String?
+  status                   AuthorityAppStatus @default(PENDING_VERIFICATION)
+  reviewedBy               String?
+  reviewNotes              String?
+  reviewedAt               DateTime?
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─── AuthorityProfile ─────────────────────────────────────────────────────────
+
+model AuthorityProfile {
+  id             String  @id @default(uuid())
+  userId         String  @unique
+  displayName    String
+  designation    String
+  departmentId   String
+  jurisdictionId String?
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department   Department   @relation(fields: [departmentId], references: [id])
+  jurisdiction Jurisdiction? @relation(fields: [jurisdictionId], references: [id])
+}
+
+// ─── Department ───────────────────────────────────────────────────────────────
+
+model Department {
+  id             String   @id @default(uuid())
+  name           String
+  type           String
+  city           String
+  state          String
+  categories     String[]
+  websiteUrl     String?
+  contactEmail   String?
+  contactPhone   String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  authorityProfiles  AuthorityProfile[]
+  authorityDirectory AuthorityDirectory[]
+  suggestedReports   Report[]            @relation("SuggestedDept")
+  assignedReports    Report[]            @relation("AssignedDept")
+  escalationRules    EscalationRule[]
+}
+
+// ─── Jurisdiction ─────────────────────────────────────────────────────────────
+
+model Jurisdiction {
+  id        String   @id @default(uuid())
+  name      String
+  city      String
+  state     String
+  boundaries Json?
+  createdAt DateTime @default(now())
+
+  authorityProfiles AuthorityProfile[]
+}
+
+// ─── AuthorityDirectory ───────────────────────────────────────────────────────
+
+model AuthorityDirectory {
+  id               String    @id @default(uuid())
+  departmentId     String
+  officialPortalUrl String?
+  dataSource       String
+  lastVerifiedAt   DateTime?
+  isActive         Boolean   @default(true)
+
+  department Department @relation(fields: [departmentId], references: [id])
+}
+
+// ─── Report ───────────────────────────────────────────────────────────────────
+
+model Report {
+  id              String        @id @default(uuid())
+  publicId        String        @unique
+  reporterId      String
+  title           String
+  description     String
+  category        IssueCategory
+  severity        Severity      @default(MEDIUM)
+  status          ReportStatus  @default(REPORTED)
+  latitude        Float
+  longitude       Float
+  address         String
+  landmark        String?
+  road            String?
+  city            String?
+  state           String?
+  suggestedDeptId String?
+  assignedDeptId  String?
+  assignedUserId  String?
+  aiCategory      String?
+  aiSeverity      String?
+  aiDescription   String?
+  aiConfidence    Float?
+  isDemoData      Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  reporter      User        @relation("ReporterReports", fields: [reporterId], references: [id])
+  assignedUser  User?       @relation("AssignedReports", fields: [assignedUserId], references: [id])
+  suggestedDept Department? @relation("SuggestedDept", fields: [suggestedDeptId], references: [id])
+  assignedDept  Department? @relation("AssignedDept", fields: [assignedDeptId], references: [id])
+
+  attachments          ReportAttachment[]
+  statusHistory        ReportStatusHistory[]
+  comments             ReportComment[]
+  support              ReportSupport[]
+  followers            FollowedIssue[]
+  duplicateLinks       DuplicateLink[]     @relation("DuplicateReport")
+  originalLinks        DuplicateLink[]     @relation("OriginalReport")
+  resolutionEvidences  ResolutionEvidence[]
+  verificationResponses VerificationResponse[]
+  notifications        Notification[]
+}
+
+// ─── ReportAttachment ─────────────────────────────────────────────────────────
+
+model ReportAttachment {
+  id         String   @id @default(uuid())
+  reportId   String
+  url        String
+  mimeType   String
+  sizeBytes  Int
+  uploadedAt DateTime @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+}
+
+// ─── ReportStatusHistory ──────────────────────────────────────────────────────
+
+model ReportStatusHistory {
+  id          String       @id @default(uuid())
+  reportId    String
+  prevStatus  ReportStatus?
+  newStatus   ReportStatus
+  actorId     String
+  reason      String?
+  evidenceUrl String?
+  createdAt   DateTime     @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  actor  User   @relation(fields: [actorId], references: [id])
+}
+
+// ─── ReportComment ────────────────────────────────────────────────────────────
+
+model ReportComment {
+  id          String   @id @default(uuid())
+  reportId    String
+  authorId    String
+  content     String
+  isModerated Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  author User   @relation(fields: [authorId], references: [id])
+}
+
+// ─── ReportSupport ────────────────────────────────────────────────────────────
+
+model ReportSupport {
+  id        String   @id @default(uuid())
+  reportId  String
+  userId    String
+  createdAt DateTime @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([reportId, userId])
+}
+
+// ─── FollowedIssue ────────────────────────────────────────────────────────────
+
+model FollowedIssue {
+  id        String   @id @default(uuid())
+  reportId  String
+  userId    String
+  createdAt DateTime @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([reportId, userId])
+}
+
+// ─── DuplicateLink ────────────────────────────────────────────────────────────
+
+model DuplicateLink {
+  id         String @id @default(uuid())
+  reportId   String
+  originalId String
+
+  report   Report @relation("DuplicateReport", fields: [reportId], references: [id], onDelete: Cascade)
+  original Report @relation("OriginalReport", fields: [originalId], references: [id])
+}
+
+// ─── ResolutionEvidence ───────────────────────────────────────────────────────
+
+model ResolutionEvidence {
+  id          String   @id @default(uuid())
+  reportId    String
+  uploadedBy  String
+  beforeUrl   String?
+  afterUrl    String?
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  report     Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  uploader   User   @relation(fields: [uploadedBy], references: [id])
+}
+
+// ─── VerificationResponse ─────────────────────────────────────────────────────
+
+model VerificationResponse {
+  id        String   @id @default(uuid())
+  reportId  String
+  userId    String
+  isFixed   Boolean
+  comment   String?
+  createdAt DateTime @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id])
+}
+
+// ─── Notification ─────────────────────────────────────────────────────────────
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  reportId  String?
+  type      String
+  title     String
+  body      String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  report Report? @relation(fields: [reportId], references: [id], onDelete: SetNull)
+}
+
+// ─── EscalationRule ───────────────────────────────────────────────────────────
+
+model EscalationRule {
+  id                   String    @id @default(uuid())
+  departmentId         String?
+  category             IssueCategory?
+  severity             Severity?
+  hoursToAcknowledge   Int       @default(48)
+  hoursToAssign        Int       @default(72)
+  hoursToResolve       Int       @default(168)
+  isActive             Boolean   @default(true)
+
+  department Department? @relation(fields: [departmentId], references: [id])
+}
+
+// ─── AuditLog ────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  actorId   String
+  action    String
+  entity    String
+  entityId  String
+  details   Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  actor User @relation(fields: [actorId], references: [id])
+}
+
+// ─── Gamification ─────────────────────────────────────────────────────────────
+
+model GamificationPoint {
+  id        String   @id @default(uuid())
+  userId    String
+  points    Int
+  reason    String
+  reportId  String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Badge {
+  id          String @id @default(uuid())
+  name        String @unique
+  description String
+  iconName    String
+  threshold   Int
+
+  userBadges UserBadge[]
+}
+
+model UserBadge {
+  id       String   @id @default(uuid())
+  userId   String
+  badgeId  String
+  earnedAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  badge Badge @relation(fields: [badgeId], references: [id])
+
+  @@unique([userId, badgeId])
+}

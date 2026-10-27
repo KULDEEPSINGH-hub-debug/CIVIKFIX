@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+**/node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+**/dist/
+build/
+**/build/
+*.tsbuildinfo
+
+# Environment & Secrets
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+*.pem
+*.key
+*.cert
+
+# SQLite Databases & Local Storage
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+packages/backend/prisma/dev.db*
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Uploads
+packages/backend/uploads/*
+!packages/backend/uploads/.gitkeep
+
+# Prisma
+packages/backend/prisma/migrations/
+
+# Coverage
+coverage/
