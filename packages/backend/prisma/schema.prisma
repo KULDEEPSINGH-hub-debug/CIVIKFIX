@@ -397,3 +397,14 @@ model UserBadge {
 
   @@unique([userId, badgeId])
 }
+
+// ─── Session (Managed by connect-pg-simple for PostgreSQL Session Store) ────────
+
+model Session {
+  sid    String   @id
+  sess   String
+  expire DateTime
+
+  @@index([expire], map: "IDX_session_expire")
+  @@map("session")
+}
