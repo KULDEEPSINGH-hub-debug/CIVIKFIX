@@ -19,6 +19,7 @@ import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
 import session from 'express-session'
+import connectPgSimple from 'connect-pg-simple'
 import { apiRateLimiter } from './middleware/rateLimiter'
 import { errorHandler } from './middleware/errorHandler'
 import authRoutes from './routes/auth'
@@ -30,6 +31,13 @@ import notificationRoutes from './routes/notifications'
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
+const isProd = process.env.NODE_ENV === 'production'
+
+// Trust reverse proxy (e.g. Render, Cloudflare, load balancers)
+// Essential for secure cookies and accurate rate limiting over HTTPS
+if (isProd || process.env.RENDER) {
+  app.set('trust proxy', 1)
+}
 
 // Security headers
 app.use(
@@ -44,13 +52,22 @@ const allowedOrigins = [
   'http://127.0.0.1:5173',
   'http://localhost:3000',
   process.env.FRONTEND_URL,
-].filter(Boolean) as string[]
+]
+  .filter(Boolean)
+  .map((url) => (url as string).replace(/\/+$/, ''))
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (!origin) {
         callback(null, true)
+        return
+      }
+      const cleanOrigin = origin.replace(/\/+$/, '')
+      if (allowedOrigins.includes(cleanOrigin)) {
+        callback(null, true)
+      } else if (isProd) {
+        callback(new Error(`Origin ${origin} not allowed by CORS`))
       } else {
         callback(null, true) // Permissive for local dev
       }
@@ -64,16 +81,39 @@ app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 // Session configuration
+const dbUrl = process.env.DATABASE_URL || ''
+const isPostgres = dbUrl.startsWith('postgres://') || dbUrl.startsWith('postgresql://')
+
+let sessionStore: session.Store | undefined
+if (isPostgres) {
+  const PgSession = connectPgSimple(session)
+  sessionStore = new PgSession({
+    conString: dbUrl,
+    createTableIfMissing: true,
+  })
+}
+
+const isCrossSite = Boolean(
+  process.env.FRONTEND_URL &&
+    !process.env.FRONTEND_URL.includes('localhost') &&
+    !process.env.FRONTEND_URL.includes('127.0.0.1')
+)
+
+const cookieSameSite =
+  (process.env.SESSION_COOKIE_SAMESITE as 'lax' | 'strict' | 'none') ||
+  (isProd ? (isCrossSite ? 'none' : 'lax') : 'lax')
+
 app.use(
   session({
     name: 'civicfix.sid',
+    store: sessionStore,
     secret: process.env.SESSION_SECRET || 'civicfix-insecure-dev-secret-replace-in-production-2026',
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+      secure: isProd,
+      sameSite: cookieSameSite,
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     },
   })

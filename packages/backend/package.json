@@ -5,10 +5,16 @@
   "scripts": {
     "dev": "nodemon",
     "build": "tsc",
+    "build:prod": "node scripts/db-engine.js generate && tsc",
     "start": "node dist/server.js",
     "test": "ts-node --transpile-only src/__tests__/api.test.ts",
-    "db:generate": "prisma generate",
-    "db:push": "prisma db push",
+    "db:generate": "node scripts/db-engine.js generate",
+    "db:push": "node scripts/db-engine.js push",
+    "db:migrate": "node scripts/db-engine.js migrate",
+    "db:generate:pg": "prisma generate --schema=prisma/schema.postgresql.prisma",
+    "db:push:pg": "prisma db push --schema=prisma/schema.postgresql.prisma",
+    "db:migrate:pg": "prisma migrate deploy --schema=prisma/schema.postgresql.prisma",
+    "db:migrate-to-pg": "ts-node scripts/migrate-to-pg.ts",
     "db:seed": "ts-node prisma/seed.ts",
     "db:reset": "prisma migrate reset --force"
   },

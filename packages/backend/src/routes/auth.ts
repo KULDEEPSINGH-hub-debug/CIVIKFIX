@@ -396,7 +396,7 @@ router.post('/google', authRateLimiter, async (req: Request, res: Response, next
 router.get('/google', (req: Request, res: Response) => {
   const clientId = process.env.GOOGLE_CLIENT_ID?.trim()
   const callbackUrl = process.env.GOOGLE_REDIRECT_URI || process.env.GOOGLE_CALLBACK_URL || 'http://localhost:3001/api/v1/auth/google/callback'
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+  const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '')
 
   if (!clientId) {
     res.redirect(`${frontendUrl}/login?error=OAUTH_NOT_CONFIGURED`)
@@ -411,7 +411,7 @@ router.get('/google', (req: Request, res: Response) => {
 
 // GET /google/callback - Handle OAuth redirect callback
 router.get('/google/callback', async (req: Request, res: Response) => {
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+  const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '')
   const { code, error } = req.query as { code?: string; error?: string }
 
   if (error || !code) {

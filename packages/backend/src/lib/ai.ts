@@ -55,8 +55,8 @@ const aiResponseSchema = z.object({
 })
 
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp']
-const PRIMARY_MODEL = 'gemini-3.5-flash-lite'
-const FALLBACK_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-1.5-flash']
+const PRIMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash'
+const FALLBACK_MODELS = ['gemini-1.5-pro', 'gemini-2.0-flash', 'gemini-1.5-flash-8b']
 
 function getTestOrMockAnalysis(
   title?: string,
