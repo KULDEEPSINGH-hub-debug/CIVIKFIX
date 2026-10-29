@@ -226,18 +226,44 @@ router.get('/duplicates', async (req: AuthenticatedRequest, res: Response, next:
 router.post('/analyze-ai', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { title, description, imageBase64, imageMimeType } = req.body
-    if (!title && !description) {
+    if (!imageBase64 && !title?.trim() && !description?.trim()) {
       res.status(400).json({
         success: false,
-        error: { message: 'Title or description is required for AI analysis', code: 'VALIDATION_ERROR' },
+        error: { message: 'Upload an evidence photo to analyze it with AI.', code: 'NO_IMAGE_OR_TEXT' },
       })
       return
     }
 
     const ai = await analyzeReport(title || '', description || '', imageBase64, imageMimeType)
     res.json({ success: true, data: ai })
-  } catch (err) {
-    next(err)
+  } catch (err: any) {
+    if (err?.code === 'API_KEY_MISSING') {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'API_KEY_MISSING',
+          message: 'Gemini Vision API key is not configured. Please set GEMINI_API_KEY in packages/backend/.env.',
+        },
+      })
+      return
+    }
+    if (err?.code === 'INVALID_IMAGE_FORMAT' || err?.code === 'UNSUPPORTED_MEDIA_TYPE' || err?.code === 'PAYLOAD_TOO_LARGE') {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: err.code === 'UNSUPPORTED_MEDIA_TYPE' ? 'INVALID_IMAGE_FORMAT' : err.code,
+          message: err.message,
+        },
+      })
+      return
+    }
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'AI_SERVICE_UNAVAILABLE',
+        message: 'Image analysis is temporarily unavailable. You can retry or continue manually.',
+      },
+    })
   }
 })
 

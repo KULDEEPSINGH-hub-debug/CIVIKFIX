@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import {
   Upload,
@@ -16,13 +16,15 @@ import {
   ShieldCheck,
   ThumbsUp,
   FileText,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Textarea } from '../components/ui/Textarea'
 import { Select } from '../components/ui/Select'
 import { Card, CardHeader, CardContent } from '../components/ui/Card'
-import { LoadingSpinner } from '../components/ui/Spinner'
+import { Spinner, LoadingSpinner } from '../components/ui/Spinner'
 import { StatusBadge } from '../components/reports/StatusBadge'
 import { useAuth } from '../hooks/useAuth'
 import api from '../lib/api'
@@ -60,12 +62,22 @@ export default function ReportIssuePage() {
   )
   const [severity, setSeverity] = useState<Severity>('MEDIUM')
   const [aiAnalyzing, setAiAnalyzing] = useState<boolean>(false)
+  type AiStatusType = 'idle' | 'analyzing' | 'success' | 'non_civic' | 'error' | 'no_image'
+  const [aiStatus, setAiStatus] = useState<AiStatusType>('idle')
+  const [aiStatusMessage, setAiStatusMessage] = useState<string | null>(null)
+  const [aiEvidenceSummary, setAiEvidenceSummary] = useState<string | null>(null)
+  const [aiFilledFields, setAiFilledFields] = useState<boolean>(false)
   const [aiSuggestion, setAiSuggestion] = useState<{
     category?: string
     severity?: string
     description?: string
     confidence?: number
   } | null>(null)
+
+  // Tracking refs to prevent re-render loops and preserve manual user edits
+  const lastAnalyzedImageRef = useRef<string | null>(null)
+  const userEditedTitleRef = useRef<boolean>(false)
+  const userEditedDescRef = useRef<boolean>(false)
 
   // Step 3: Location
   const [latitude, setLatitude] = useState<number>(26.9124)
@@ -113,7 +125,17 @@ export default function ReportIssuePage() {
 
     setSelectedFile(file)
     const reader = new FileReader()
-    reader.onload = () => setPreviewUrl(reader.result as string)
+    reader.onload = () => {
+      const dataUrl = reader.result as string
+      setPreviewUrl(dataUrl)
+      // Reset analysis tracking for the new image
+      lastAnalyzedImageRef.current = null
+      userEditedTitleRef.current = false
+      userEditedDescRef.current = false
+      setAiStatus('idle')
+      setAiStatusMessage(null)
+      setAiFilledFields(false)
+    }
     reader.readAsDataURL(file)
   }
 
@@ -121,72 +143,111 @@ export default function ReportIssuePage() {
     setSelectedFile(null)
     setPreviewUrl(null)
     setFileError(null)
+    lastAnalyzedImageRef.current = null
+    userEditedTitleRef.current = false
+    userEditedDescRef.current = false
+    setAiStatus('idle')
+    setAiStatusMessage(null)
+    setAiFilledFields(false)
   }
 
-  // Trigger AI assistant
-  const runAiAssistant = async () => {
-    if (!description.trim() && !title.trim()) {
-      alert('Please enter a brief title or description first for the AI to analyze.')
+  // Trigger AI Vision Assistant (Primary image input)
+  const runAiVisionAnalysis = async (force: boolean = false) => {
+    if (!previewUrl) {
+      setAiStatus('no_image')
+      setAiStatusMessage('Upload an evidence photo to analyze it with AI.')
       return
     }
+
+    if (!force && lastAnalyzedImageRef.current === previewUrl) {
+      // Image already analyzed, prevent duplicate runs
+      return
+    }
+
+    if (aiAnalyzing) return
+
     setAiAnalyzing(true)
+    setAiStatus('analyzing')
+    setAiStatusMessage('Analyzing your image and preparing report details...')
+
     try {
+      lastAnalyzedImageRef.current = previewUrl
+
       const res = await api.post('/reports/analyze-ai', {
-        title,
-        description,
-        imageBase64: previewUrl || undefined,
+        title: userEditedTitleRef.current ? title : undefined,
+        description: userEditedDescRef.current ? description : undefined,
+        imageBase64: previewUrl,
         imageMimeType: selectedFile?.type || 'image/jpeg',
       })
+
       if (res.data.success && res.data.data) {
-        const ai = res.data.data
-        if (ai.category) setCategory(ai.category as IssueCategory)
-        if (ai.severity) setSeverity(ai.severity as Severity)
+        const result = res.data.data
+
+        if (result.isCivicIssue === false) {
+          setAiStatus('non_civic')
+          setAiStatusMessage("We couldn't confidently identify a civic issue in this image. You can enter the details manually.")
+          return
+        }
+
+        let filledAny = false
+
+        // Automatically populate Title if not manually edited by user
+        if (!userEditedTitleRef.current && result.title) {
+          setTitle(result.title)
+          filledAny = true
+        }
+
+        // Automatically populate Description if not manually edited by user
+        if (!userEditedDescRef.current && result.description) {
+          setDescription(result.description)
+          filledAny = true
+        }
+
+        // Suggest Category
+        if (result.category) {
+          setCategory(result.category as IssueCategory)
+          filledAny = true
+        }
+
+        // Suggest Severity
+        if (result.severity) {
+          setSeverity(result.severity as Severity)
+          filledAny = true
+        }
+
+        setAiFilledFields(filledAny)
+        setAiEvidenceSummary(result.evidenceSummary || null)
         setAiSuggestion({
-          category: ai.category,
-          severity: ai.severity,
-          description: ai.description || `Classified as ${ai.category?.replace(/_/g, ' ')} with ${ai.severity} severity.`,
-          confidence: ai.confidence,
+          category: result.category,
+          severity: result.severity,
+          description: result.evidenceSummary || result.description,
+          confidence: result.confidence,
         })
+        setAiStatus('success')
+        setAiStatusMessage('AI analysis complete. Review the suggested details before continuing.')
       }
-    } catch (err) {
-      console.warn('AI analysis endpoint error, fallback to local heuristics:', err)
-      const descLower = (title + ' ' + description).toLowerCase()
-      let sugCategory: IssueCategory = 'OTHER'
-      let sugSev: Severity = 'MEDIUM'
-      let conf = 0.88
-
-      if (descLower.includes('pothole') || descLower.includes('road')) {
-        sugCategory = 'ROAD_DAMAGE'
-        sugSev = 'HIGH'
-      } else if (descLower.includes('light') || descLower.includes('bulb')) {
-        sugCategory = 'STREETLIGHT'
-        sugSev = 'LOW'
-      } else if (descLower.includes('garbage') || descLower.includes('waste')) {
-        sugCategory = 'GARBAGE'
-        sugSev = 'MEDIUM'
-      } else if (descLower.includes('water') || descLower.includes('pipe')) {
-        sugCategory = 'WATER_LEAKAGE'
-        sugSev = 'HIGH'
-      } else if (descLower.includes('drain') || descLower.includes('sewer')) {
-        sugCategory = 'DRAINAGE'
-        sugSev = 'CRITICAL'
-      } else if (descLower.includes('traffic') || descLower.includes('signal')) {
-        sugCategory = 'TRAFFIC_SIGNAL'
-        sugSev = 'HIGH'
+    } catch (err: any) {
+      console.warn('AI analysis error:', err)
+      setAiStatus('error')
+      const serverCode = err?.response?.data?.error?.code
+      if (serverCode === 'API_KEY_MISSING') {
+        setAiStatusMessage(
+          'Image analysis is temporarily unavailable (GEMINI_API_KEY is not configured in packages/backend/.env). You can retry or continue manually.'
+        )
+      } else {
+        setAiStatusMessage('Image analysis is temporarily unavailable. You can retry or continue manually.')
       }
-
-      setCategory(sugCategory)
-      setSeverity(sugSev)
-      setAiSuggestion({
-        category: sugCategory,
-        severity: sugSev,
-        description: `Suggested category: ${sugCategory.replace(/_/g, ' ')}. Severity preliminary estimate: ${sugSev}.`,
-        confidence: conf,
-      })
     } finally {
       setAiAnalyzing(false)
     }
   }
+
+  // Automatically initiate image analysis when an image is available
+  useEffect(() => {
+    if (previewUrl && lastAnalyzedImageRef.current !== previewUrl && !aiAnalyzing) {
+      runAiVisionAnalysis(false)
+    }
+  }, [previewUrl, currentStep])
 
   // GPS detection
   const handleDetectGps = () => {
@@ -489,8 +550,13 @@ export default function ReportIssuePage() {
 
               <div>
                 <div className="flex justify-between items-center mb-1">
-                  <label className="block text-xs font-semibold text-text-secondary">
-                    Report Title *
+                  <label className="block text-xs font-semibold text-text-secondary flex items-center gap-1.5">
+                    <span>Report Title *</span>
+                    {aiFilledFields && !userEditedTitleRef.current && (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-blue-100 text-civic-blue font-medium">
+                        AI Suggested
+                      </span>
+                    )}
                   </label>
                   <span
                     className={`text-[11px] font-medium ${
@@ -512,7 +578,10 @@ export default function ReportIssuePage() {
                   type="text"
                   placeholder="e.g. Deep pothole damaging vehicles near Sector 4 market"
                   value={title}
-                  onChange={(e) => setTitle(e.target.value)}
+                  onChange={(e) => {
+                    setTitle(e.target.value)
+                    userEditedTitleRef.current = true
+                  }}
                   className="text-sm"
                   maxLength={200}
                   required
@@ -526,8 +595,13 @@ export default function ReportIssuePage() {
 
               <div>
                 <div className="flex justify-between items-center mb-1">
-                  <label className="block text-xs font-semibold text-text-secondary">
-                    Detailed Description *
+                  <label className="block text-xs font-semibold text-text-secondary flex items-center gap-1.5">
+                    <span>Detailed Description *</span>
+                    {aiFilledFields && !userEditedDescRef.current && (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-blue-100 text-civic-blue font-medium">
+                        AI Suggested
+                      </span>
+                    )}
                   </label>
                   <span
                     className={`text-[11px] font-medium ${
@@ -549,7 +623,10 @@ export default function ReportIssuePage() {
                   rows={4}
                   placeholder="Describe the exact nature of the defect, physical dimensions, duration of occurrence, and hazards..."
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={(e) => {
+                    setDescription(e.target.value)
+                    userEditedDescRef.current = true
+                  }}
                   className="text-sm"
                   maxLength={2000}
                   required
@@ -561,33 +638,132 @@ export default function ReportIssuePage() {
                 )}
               </div>
 
-              {/* AI Analysis Trigger Box */}
-              <div className="p-3.5 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                <div className="text-xs">
-                  <strong className="text-navy flex items-center gap-1.5 font-bold">
-                    <Sparkles className="h-4 w-4 text-civic-blue" />
-                    AI Issue Categorization Assistant
-                  </strong>
-                  <span className="text-text-secondary block mt-0.5">
-                    Analyzes your title & description to classify the grievance according to municipal department guidelines.
-                  </span>
+              {/* AI Vision Status & Control Container */}
+              {aiStatus === 'analyzing' && (
+                <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-3">
+                  <Spinner size="sm" />
+                  <div className="text-xs">
+                    <strong className="text-navy block font-semibold">
+                      Analyzing your image and preparing report details...
+                    </strong>
+                    <span className="text-text-secondary text-[11px]">
+                      Gemini Vision is inspecting the defect and auto-generating title, description, category, and severity.
+                    </span>
+                  </div>
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={runAiAssistant}
-                  disabled={aiAnalyzing}
-                  className="border-civic-blue text-civic-blue bg-white hover:bg-blue-50 text-xs flex-shrink-0"
-                >
-                  {aiAnalyzing ? 'Analyzing...' : 'Auto-Classify with AI'}
-                </Button>
-              </div>
+              )}
 
-              {aiSuggestion && (
-                <div className="p-3 bg-green-50 border border-green-200 rounded text-xs text-text-secondary">
-                  <span className="font-semibold text-success block mb-0.5">AI Suggestion Applied:</span>
-                  {aiSuggestion.description} (You can manually override below)
+              {aiStatus === 'success' && (
+                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-lg space-y-1.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-2 text-xs">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-emerald-900 font-semibold block">
+                          AI analysis complete. Review the suggested details before continuing.
+                        </strong>
+                        <span className="text-emerald-700 text-[11px] block mt-0.5">
+                          {aiEvidenceSummary || 'Report fields have been pre-filled from your uploaded photograph. You can freely edit any field below.'}
+                        </span>
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => runAiVisionAnalysis(true)}
+                      disabled={aiAnalyzing}
+                      className="text-[11px] h-7 px-2.5 border-emerald-300 text-emerald-800 bg-white hover:bg-emerald-100 shrink-0"
+                    >
+                      <RefreshCw className="h-3 w-3 mr-1" />
+                      Re-Analyze
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {aiStatus === 'non_civic' && (
+                <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2.5">
+                  <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="text-xs">
+                    <strong className="text-amber-900 font-semibold block">
+                      We couldn't confidently identify a civic issue in this image. You can enter the details manually.
+                    </strong>
+                    <span className="text-amber-800 text-[11px] block mt-0.5">
+                      Please review your photograph in Step 1 or describe the defect manually in the fields below.
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {aiStatus === 'error' && (
+                <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5 text-xs">
+                    <AlertCircle className="h-4 w-4 text-danger shrink-0 mt-0.5" />
+                    <div>
+                      <strong className="text-danger font-semibold block">
+                        Image analysis is temporarily unavailable. You can retry or continue manually.
+                      </strong>
+                      <span className="text-text-secondary text-[11px] block mt-0.5">
+                        {aiStatusMessage || 'You can manually enter the problem title, description, and category below.'}
+                      </span>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => runAiVisionAnalysis(true)}
+                    disabled={aiAnalyzing}
+                    className="text-xs border-red-300 text-danger bg-white hover:bg-red-50 shrink-0"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5 mr-1" />
+                    Retry Analysis
+                  </Button>
+                </div>
+              )}
+
+              {aiStatus === 'no_image' && (
+                <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2">
+                    <Info className="h-4 w-4 text-civic-blue shrink-0" />
+                    <span className="text-navy font-medium">
+                      Upload an evidence photo to analyze it with AI.
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentStep(1)}
+                    className="text-[11px] h-7 px-2 border-civic-blue text-civic-blue bg-white hover:bg-blue-50"
+                  >
+                    Back to Step 1
+                  </Button>
+                </div>
+              )}
+
+              {aiStatus === 'idle' && (
+                <div className="p-3.5 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="text-xs">
+                    <strong className="text-navy flex items-center gap-1.5 font-bold">
+                      <Sparkles className="h-4 w-4 text-civic-blue" />
+                      AI Vision Assistant
+                    </strong>
+                    <span className="text-text-secondary block mt-0.5">
+                      Automatically drafts report title, factual description, category, and severity from your uploaded photo.
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => runAiVisionAnalysis(true)}
+                    disabled={aiAnalyzing}
+                    className="border-civic-blue text-civic-blue bg-white hover:bg-blue-50 text-xs flex-shrink-0"
+                  >
+                    Auto-Classify with AI
+                  </Button>
                 </div>
               )}
 
@@ -634,11 +810,11 @@ export default function ReportIssuePage() {
                 <Button
                   variant="primary"
                   size="md"
-                  disabled={title.trim().length < 10 || description.trim().length < 20}
+                  disabled={aiAnalyzing || title.trim().length < 10 || description.trim().length < 20}
                   onClick={() => setCurrentStep(3)}
                   className="bg-navy hover:bg-navy-700 text-xs font-semibold gap-1.5"
                 >
-                  Next: Select Location
+                  {aiAnalyzing ? 'Analyzing Image...' : 'Next: Select Location'}
                   <ArrowRight className="h-3.5 w-3.5" />
                 </Button>
               </div>

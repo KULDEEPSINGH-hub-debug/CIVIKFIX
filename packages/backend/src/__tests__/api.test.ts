@@ -1,3 +1,6 @@
+process.env.NODE_ENV = 'test'
+process.env.MOCK_AI = 'true'
+
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
 import request from 'supertest'
@@ -141,6 +144,66 @@ describe('CivicFix REST API Test Suite', () => {
     assert.strictEqual(res.body.success, true)
     assert.strictEqual(res.body.data.category, 'STREETLIGHT')
     assert.ok(typeof res.body.data.confidence === 'number')
+    assert.ok(typeof res.body.data.isCivicIssue === 'boolean')
+  })
+
+  it('POST /api/v1/reports/analyze-ai analyzes image without pre-entered title or description', async () => {
+    // 1x1 transparent PNG data URI
+    const dummyImage = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+    const res = await request(app)
+      .post('/api/v1/reports/analyze-ai')
+      .send({
+        imageBase64: dummyImage,
+      })
+    assert.strictEqual(res.status, 200)
+    assert.strictEqual(res.body.success, true)
+    assert.ok(res.body.data.title && res.body.data.title.length >= 5)
+    assert.ok(res.body.data.description && res.body.data.description.length >= 20)
+    assert.ok(typeof res.body.data.category === 'string')
+    assert.ok(typeof res.body.data.severity === 'string')
+    assert.strictEqual(res.body.data.isCivicIssue, true)
+  })
+
+  it('POST /api/v1/reports/analyze-ai rejects request when both image and text are missing', async () => {
+    const res = await request(app)
+      .post('/api/v1/reports/analyze-ai')
+      .send({})
+    assert.strictEqual(res.status, 400)
+    assert.strictEqual(res.body.success, false)
+    assert.strictEqual(res.body.error.code, 'NO_IMAGE_OR_TEXT')
+  })
+
+  it('POST /api/v1/reports/analyze-ai rejects invalid image format', async () => {
+    const res = await request(app)
+      .post('/api/v1/reports/analyze-ai')
+      .send({ imageBase64: 'data:text/plain;base64,SGVsbG8=' })
+    assert.strictEqual(res.status, 400)
+    assert.strictEqual(res.body.success, false)
+    assert.strictEqual(res.body.error.code, 'INVALID_IMAGE_FORMAT')
+  })
+
+  it('POST /api/v1/reports/analyze-ai returns 503 API_KEY_MISSING in production mode without key', async () => {
+    const originalEnv = process.env.NODE_ENV
+    const originalMock = process.env.MOCK_AI
+    const originalKey = process.env.GEMINI_API_KEY
+    try {
+      process.env.NODE_ENV = 'production'
+      delete process.env.MOCK_AI
+      delete process.env.GEMINI_API_KEY
+
+      const res = await request(app)
+        .post('/api/v1/reports/analyze-ai')
+        .send({
+          imageBase64: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+        })
+      assert.strictEqual(res.status, 503)
+      assert.strictEqual(res.body.success, false)
+      assert.strictEqual(res.body.error.code, 'API_KEY_MISSING')
+    } finally {
+      process.env.NODE_ENV = originalEnv
+      process.env.MOCK_AI = originalMock
+      if (originalKey) process.env.GEMINI_API_KEY = originalKey
+    }
   })
 
   it('POST /api/v1/reports/reverse-geocode returns valid location information', async () => {
