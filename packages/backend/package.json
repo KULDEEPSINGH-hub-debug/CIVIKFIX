@@ -16,12 +16,22 @@
     "db:migrate:pg": "prisma migrate deploy --schema=prisma/schema.postgresql.prisma",
     "db:migrate-to-pg": "ts-node scripts/migrate-to-pg.ts",
     "db:seed": "ts-node prisma/seed.ts",
-    "db:reset": "prisma migrate reset --force"
+    "db:reset": "prisma migrate reset --force",
+    "test:check": "tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.12",
     "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^5.10.2",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/connect-pg-simple": "^7.0.3",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/express-session": "^1.17.10",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.11.25",
+    "@types/nodemailer": "^6.4.14",
+    "@types/uuid": "^9.0.8",
     "bcryptjs": "^2.4.3",
     "connect-pg-simple": "^9.0.1",
     "cors": "^2.8.5",
@@ -33,24 +43,15 @@
     "helmet": "^7.1.0",
     "multer": "^1.4.5-lts.1",
     "nodemailer": "^6.9.12",
+    "prisma": "^5.10.2",
+    "typescript": "^5.4.2",
     "uuid": "^9.0.1",
     "zod": "^3.22.4"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
-    "@types/connect-pg-simple": "^7.0.3",
-    "@types/cors": "^2.8.17",
-    "@types/express": "^5.0.0",
-    "@types/express-session": "^1.17.10",
-    "@types/multer": "^1.4.11",
-    "@types/node": "^20.11.25",
-    "@types/nodemailer": "^6.4.14",
     "@types/supertest": "^7.2.1",
-    "@types/uuid": "^9.0.8",
     "nodemon": "^3.1.0",
-    "prisma": "^5.10.2",
     "supertest": "^7.3.1",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.4.2"
+    "ts-node": "^10.9.2"
   }
 }
