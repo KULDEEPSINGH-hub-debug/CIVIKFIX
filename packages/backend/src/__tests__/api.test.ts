@@ -113,7 +113,27 @@ describe('CivicFix REST API Test Suite', () => {
     assert.strictEqual(res.body.success, false)
   })
 
-  // ─── 5. Authority Application Workflow ──────────────────────────────────────
+  // ─── 5. Authority Application & Login Workflow ──────────────────────────────
+  it('POST /api/v1/auth/authority/login with valid demo authority credentials should succeed', async () => {
+    const res = await request(app).post('/api/v1/auth/authority/login').send({
+      email: 'demo-authority@civicfix.demo',
+      password: 'DemoAuthority123!',
+    })
+    assert.strictEqual(res.status, 200)
+    assert.strictEqual(res.body.success, true)
+    assert.strictEqual(res.body.data.user.role, 'AUTHORITY')
+    assert.ok(res.body.data.user.authorityProfile)
+  })
+
+  it('POST /api/v1/auth/authority/login rejects non-authority user with 403 NOT_AUTHORITY', async () => {
+    const res = await request(app).post('/api/v1/auth/authority/login').send({
+      email: 'demo-citizen@civicfix.demo',
+      password: 'DemoCitizen123!',
+    })
+    assert.strictEqual(res.status, 403)
+    assert.strictEqual(res.body.success, false)
+    assert.strictEqual(res.body.error.code, 'NOT_AUTHORITY')
+  })
 
   it('POST /api/v1/auth/authority/apply should require complete official details', async () => {
     const res = await request(app).post('/api/v1/auth/authority/apply').send({
@@ -221,5 +241,284 @@ describe('CivicFix REST API Test Suite', () => {
     assert.strictEqual(res.body.success, true)
     assert.ok(res.body.data.items.length >= 1)
     assert.strictEqual(res.body.data.items[0].publicId, 'CF-2026-000001')
+  })
+
+  // ─── 7. Google OAuth & Citizen Dashboard Ownership Tests ────────────────────
+
+  it('GET /api/v1/auth/google/config returns configuration status without exposing secrets', async () => {
+    const res = await request(app).get('/api/v1/auth/google/config')
+    assert.strictEqual(res.status, 200)
+    assert.strictEqual(res.body.success, true)
+    assert.ok(typeof res.body.data.configured === 'boolean')
+    assert.strictEqual(res.body.data.clientSecret, undefined) // Never expose secret
+  })
+
+  it('POST /api/v1/auth/google returns OAUTH_NOT_CONFIGURED (503) when clientId is missing', async () => {
+    const origId = process.env.GOOGLE_CLIENT_ID
+    try {
+      delete process.env.GOOGLE_CLIENT_ID
+      const res = await request(app)
+        .post('/api/v1/auth/google')
+        .send({ credential: 'dummy-google-jwt-token' })
+      assert.strictEqual(res.status, 503)
+      assert.strictEqual(res.body.success, false)
+      assert.strictEqual(res.body.error.code, 'OAUTH_NOT_CONFIGURED')
+    } finally {
+      if (origId) process.env.GOOGLE_CLIENT_ID = origId
+    }
+  })
+
+  it('POST /api/v1/auth/google rejects invalid/forged Google ID tokens (401)', async () => {
+    const origId = process.env.GOOGLE_CLIENT_ID
+    try {
+      process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com'
+      const res = await request(app)
+        .post('/api/v1/auth/google')
+        .send({ credential: 'forged.invalid.token' })
+      assert.strictEqual(res.status, 401)
+      assert.strictEqual(res.body.success, false)
+      assert.strictEqual(res.body.error.code, 'INVALID_GOOGLE_TOKEN')
+    } finally {
+      if (origId) process.env.GOOGLE_CLIENT_ID = origId
+      else delete process.env.GOOGLE_CLIENT_ID
+    }
+  })
+
+  it('GET /api/v1/reports/mine returns 401 for unauthenticated request', async () => {
+    const res = await request(app).get('/api/v1/reports/mine')
+    assert.strictEqual(res.status, 401)
+    assert.strictEqual(res.body.success, false)
+    assert.strictEqual(res.body.error.code, 'UNAUTHORIZED')
+  })
+
+  it('Report ownership, citizen dashboard persistence, and count consistency', async () => {
+    const agentA = request.agent(app)
+
+    // 1. Citizen A logs in
+    const loginRes = await agentA.post('/api/v1/auth/login').send({
+      email: 'demo-citizen@civicfix.demo',
+      password: 'DemoCitizen123!',
+    })
+    assert.strictEqual(loginRes.status, 200)
+    const citizenAId = loginRes.body.data.user.id
+
+    // 2. Fetch initial dashboard data for Citizen A
+    const initialMineRes = await agentA.get('/api/v1/reports/mine')
+    assert.strictEqual(initialMineRes.status, 200)
+    assert.strictEqual(initialMineRes.body.success, true)
+    assert.ok(initialMineRes.body.data.stats)
+    const initialTotal = initialMineRes.body.data.stats.totalReports
+
+    // 3. Citizen A submits a new civic report
+    const createRes = await agentA.post('/api/v1/reports').send({
+      title: 'Dangerous deep pothole on MG road crossing',
+      description: 'Asphalt surface has severely degraded with 8 inch deep road crater obstructing traffic.',
+      category: 'ROAD_DAMAGE',
+      severity: 'HIGH',
+      latitude: 26.9124,
+      longitude: 75.7873,
+      address: 'MG Road Junction, Jaipur',
+    })
+    assert.strictEqual(createRes.status, 201)
+    assert.strictEqual(createRes.body.success, true)
+    const newReport = createRes.body.data
+    assert.strictEqual(newReport.reporterId, citizenAId) // Ownership verified on backend!
+
+    // 4. Citizen A fetches dashboard again (simulating page refresh / navigation)
+    const refreshedMineRes = await agentA.get('/api/v1/reports/mine')
+    assert.strictEqual(refreshedMineRes.status, 200)
+    assert.strictEqual(refreshedMineRes.body.success, true)
+    // Verify report appears in items
+    const foundReport = refreshedMineRes.body.data.items.find((r: any) => r.id === newReport.id)
+    assert.ok(foundReport, 'Submitted report must appear in Citizen Dashboard')
+    assert.strictEqual(foundReport.publicId, newReport.publicId)
+    // Verify total count incremented by exactly 1 from database
+    assert.strictEqual(refreshedMineRes.body.data.stats.totalReports, initialTotal + 1)
+
+    // 5. User Isolation: Register & log in as Citizen B
+    const agentB = request.agent(app)
+    const uniqueEmail = `test-citizen-${Date.now()}@civicfix.demo`
+    const registerB = await agentB.post('/api/v1/auth/register').send({
+      email: uniqueEmail,
+      password: 'Password123!',
+      displayName: 'Citizen B Tester',
+    })
+    assert.strictEqual(registerB.status, 201)
+
+    const loginB = await agentB.post('/api/v1/auth/login').send({
+      email: uniqueEmail,
+      password: 'Password123!',
+    })
+    assert.strictEqual(loginB.status, 200)
+
+    // 6. Citizen B dashboard must NOT contain Citizen A's report!
+    const citizenBMine = await agentB.get('/api/v1/reports/mine')
+    assert.strictEqual(citizenBMine.status, 200)
+    const leak = citizenBMine.body.data.items.find((r: any) => r.id === newReport.id)
+    assert.strictEqual(leak, undefined, 'Citizen B must NOT see Citizen A private reports')
+    assert.strictEqual(citizenBMine.body.data.stats.totalReports, 0)
+  })
+
+  // ─── 8. Google OAuth Authentication Lifecycle & Role Isolation Tests ────────
+
+  it('Google OAuth: creates new user strictly as CITIZEN and establishes session', async () => {
+    const { OAuth2Client } = await import('google-auth-library')
+    const originalVerifyIdToken = OAuth2Client.prototype.verifyIdToken
+
+    const testGoogleId = `google-uid-${Date.now()}`
+    const testEmail = `new-google-citizen-${Date.now()}@example.com`
+
+    OAuth2Client.prototype.verifyIdToken = async function () {
+      return {
+        getPayload: () => ({
+          sub: testGoogleId,
+          email: testEmail,
+          email_verified: true,
+          name: 'Verified Google Citizen',
+          picture: 'https://example.com/avatar.png',
+        }),
+      } as any
+    }
+
+    try {
+      const agent = request.agent(app)
+      const res = await agent
+        .post('/api/v1/auth/google')
+        .send({ credential: 'valid.mocked.google.token' })
+
+      assert.strictEqual(res.status, 200)
+      assert.strictEqual(res.body.success, true)
+      assert.strictEqual(res.body.data.user.email, testEmail)
+      assert.strictEqual(res.body.data.user.role, 'CITIZEN') // Strict role isolation
+      assert.strictEqual(res.body.data.user.authProvider, 'GOOGLE')
+      assert.strictEqual(res.body.data.user.googleId, testGoogleId)
+
+      // Verify session persistence with /api/v1/auth/me
+      const meRes = await agent.get('/api/v1/auth/me')
+      assert.strictEqual(meRes.status, 200)
+      assert.strictEqual(meRes.body.success, true)
+      assert.strictEqual(meRes.body.data.email, testEmail)
+      assert.strictEqual(meRes.body.data.role, 'CITIZEN')
+
+      // Verify session logout
+      const logoutRes = await agent.post('/api/v1/auth/logout')
+      assert.strictEqual(logoutRes.status, 200)
+
+      const afterLogoutMe = await agent.get('/api/v1/auth/me')
+      assert.strictEqual(afterLogoutMe.status, 401)
+    } finally {
+      OAuth2Client.prototype.verifyIdToken = originalVerifyIdToken
+    }
+  })
+
+  it('Google OAuth: rejects unverified email (email_verified: false)', async () => {
+    const { OAuth2Client } = await import('google-auth-library')
+    const originalVerifyIdToken = OAuth2Client.prototype.verifyIdToken
+
+    OAuth2Client.prototype.verifyIdToken = async function () {
+      return {
+        getPayload: () => ({
+          sub: 'unverified-sub-123',
+          email: 'unverified@example.com',
+          email_verified: false,
+          name: 'Unverified Citizen',
+        }),
+      } as any
+    }
+
+    try {
+      const res = await request(app)
+        .post('/api/v1/auth/google')
+        .send({ credential: 'token.for.unverified.user' })
+
+      assert.strictEqual(res.status, 400)
+      assert.strictEqual(res.body.success, false)
+      assert.strictEqual(res.body.error.code, 'EMAIL_NOT_VERIFIED')
+    } finally {
+      OAuth2Client.prototype.verifyIdToken = originalVerifyIdToken
+    }
+  })
+
+  it('Google OAuth: links to existing user without escalating role or overwriting permissions', async () => {
+    const { OAuth2Client } = await import('google-auth-library')
+    const originalVerifyIdToken = OAuth2Client.prototype.verifyIdToken
+
+    // Create an existing local user with CITIZEN role first
+    const existingEmail = `existing-citizen-${Date.now()}@civicfix.demo`
+    const registerRes = await request(app).post('/api/v1/auth/register').send({
+      email: existingEmail,
+      password: 'StrongPassword123!',
+      displayName: 'Existing Citizen',
+    })
+    assert.strictEqual(registerRes.status, 201)
+
+    const linkedGoogleSub = `google-linked-${Date.now()}`
+
+    OAuth2Client.prototype.verifyIdToken = async function () {
+      return {
+        getPayload: () => ({
+          sub: linkedGoogleSub,
+          email: existingEmail,
+          email_verified: true,
+          name: 'Existing Citizen Name',
+        }),
+      } as any
+    }
+
+    try {
+      const agent = request.agent(app)
+      const res = await agent
+        .post('/api/v1/auth/google')
+        .send({ credential: 'token.for.existing.user' })
+
+      assert.strictEqual(res.status, 200)
+      assert.strictEqual(res.body.success, true)
+      assert.strictEqual(res.body.data.user.email, existingEmail)
+      assert.strictEqual(res.body.data.user.googleId, linkedGoogleSub)
+      assert.strictEqual(res.body.data.user.role, 'CITIZEN') // Preserves role
+    } finally {
+      OAuth2Client.prototype.verifyIdToken = originalVerifyIdToken
+    }
+  })
+
+  it('Google OAuth: blocks suspended user with 403 ACCOUNT_INACTIVE', async () => {
+    const { OAuth2Client } = await import('google-auth-library')
+    const originalVerifyIdToken = OAuth2Client.prototype.verifyIdToken
+
+    const suspendedEmail = `suspended-${Date.now()}@civicfix.demo`
+    const suspendedGoogleSub = `suspended-google-${Date.now()}`
+    const prisma = (await import('../lib/prisma')).default
+    await prisma.user.create({
+      data: {
+        email: suspendedEmail,
+        googleId: suspendedGoogleSub,
+        authProvider: 'GOOGLE',
+        role: 'CITIZEN',
+        status: 'SUSPENDED',
+      },
+    })
+
+    OAuth2Client.prototype.verifyIdToken = async function () {
+      return {
+        getPayload: () => ({
+          sub: suspendedGoogleSub,
+          email: suspendedEmail,
+          email_verified: true,
+          name: 'Suspended Citizen',
+        }),
+      } as any
+    }
+
+    try {
+      const res = await request(app)
+        .post('/api/v1/auth/google')
+        .send({ credential: 'token.for.suspended.user' })
+
+      assert.strictEqual(res.status, 403)
+      assert.strictEqual(res.body.success, false)
+      assert.strictEqual(res.body.error.code, 'ACCOUNT_INACTIVE')
+    } finally {
+      OAuth2Client.prototype.verifyIdToken = originalVerifyIdToken
+    }
   })
 })

@@ -8,6 +8,7 @@ import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { FormField } from '../components/ui/FormField'
 import { Alert } from '../components/ui/Alert'
+import { GoogleLoginButton } from '../components/auth/GoogleLoginButton'
 import { useAuth } from '../hooks/useAuth'
 
 const loginSchema = z.object({
@@ -65,6 +66,20 @@ export default function LoginPage() {
               {error}
             </Alert>
           )}
+
+          {/* Google Single Sign-On */}
+          <div className="mb-6">
+            <GoogleLoginButton text="signin" redirectPath="/dashboard" />
+          </div>
+
+          <div className="relative mb-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-border" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-surface px-2 text-text-secondary font-medium">Or continue with credentials</span>
+            </div>
+          </div>
 
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
             <FormField label="Email Address" htmlFor="email" required error={errors.email?.message}>

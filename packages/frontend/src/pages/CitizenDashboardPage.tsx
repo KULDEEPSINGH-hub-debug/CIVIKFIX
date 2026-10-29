@@ -14,6 +14,8 @@ import {
   ChevronRight,
   ShieldCheck,
   CheckCheck,
+  RefreshCw,
+  AlertTriangle,
 } from 'lucide-react'
 import { StatusBadge } from '../components/reports/StatusBadge'
 import { CategoryIcon } from '../components/reports/CategoryIcon'
@@ -38,6 +40,15 @@ interface NotificationItem {
   }
 }
 
+interface CitizenStats {
+  totalReports: number
+  allTimeReports?: number
+  openIssues: number
+  inProgress: number
+  resolutionClaimed: number
+  verifiedResolved: number
+}
+
 export default function CitizenDashboardPage() {
   const { user, isAuthenticated, loading: authLoading } = useAuth()
   const navigate = useNavigate()
@@ -47,7 +58,10 @@ export default function CitizenDashboardPage() {
   const [followedReports, setFollowedReports] = useState<Report[]>([])
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
   const [unreadCount, setUnreadCount] = useState<number>(0)
+  const [stats, setStats] = useState<CitizenStats | null>(null)
   const [loading, setLoading] = useState<boolean>(true)
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   // Redirect if not logged in
   useEffect(() => {
@@ -56,32 +70,45 @@ export default function CitizenDashboardPage() {
     }
   }, [authLoading, isAuthenticated, navigate])
 
-  const fetchDashboardData = async () => {
+  const fetchDashboardData = async (silent: boolean = false) => {
     if (!user) return
-    setLoading(true)
+    if (!silent) setLoading(true)
+    else setIsRefreshing(true)
+    setErrorMessage(null)
+
     try {
-      const [reportsRes, notifRes] = await Promise.all([
-        api.get('/reports', { params: { limit: 50 } }),
+      const [reportsRes, followedRes, notifRes] = await Promise.all([
+        api.get('/reports/mine'),
+        api.get('/reports/followed'),
         api.get('/notifications'),
       ])
 
       if (reportsRes.data.success) {
-        const all: Report[] = reportsRes.data.data.items || reportsRes.data.data.reports || []
-        // Filter user's reports
-        const mine = all.filter((r) => r.reporterId === user.id)
-        setMyReports(mine)
-        // Followed issues
-        setFollowedReports(all.filter((r) => r.followers?.some((f: { userId: string }) => f.userId === user.id)))
+        const items: Report[] = reportsRes.data.data.items || []
+        setMyReports(items)
+        if (reportsRes.data.data.stats) {
+          setStats(reportsRes.data.data.stats)
+        }
+      }
+
+      if (followedRes.data.success) {
+        const items: Report[] = followedRes.data.data.items || []
+        setFollowedReports(items)
       }
 
       if (notifRes.data.success) {
         setNotifications(notifRes.data.data.notifications || [])
         setUnreadCount(notifRes.data.data.unreadCount || 0)
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to load dashboard:', err)
+      setErrorMessage(
+        err?.response?.data?.error?.message ||
+        'Unable to load your citizen reports from database. Please check connection and retry.'
+      )
     } finally {
       setLoading(false)
+      setIsRefreshing(false)
     }
   }
 
@@ -143,37 +170,70 @@ export default function CitizenDashboardPage() {
             </p>
           </div>
 
-          <Link to="/report">
-            <Button variant="primary" size="md" className="bg-navy hover:bg-navy-700 text-xs font-semibold gap-2">
-              <PlusCircle className="h-4 w-4" />
-              Submit New Civic Report
+          <div className="flex items-center gap-2.5">
+            <Button
+              variant="outline"
+              size="md"
+              onClick={() => fetchDashboardData(true)}
+              disabled={isRefreshing}
+              className="text-xs font-semibold gap-1.5 border-border hover:bg-gray-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin text-navy' : ''}`} />
+              {isRefreshing ? 'Syncing...' : 'Sync Reports'}
             </Button>
-          </Link>
+            <Link to="/report">
+              <Button variant="primary" size="md" className="bg-navy hover:bg-navy-700 text-xs font-semibold gap-2">
+                <PlusCircle className="h-4 w-4" />
+                Submit New Civic Report
+              </Button>
+            </Link>
+          </div>
         </div>
 
-        {/* 4 Overview Metric Cards */}
+        {/* Optional Error Alert */}
+        {errorMessage && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between gap-3 text-xs text-red-700">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-red-600" />
+              <span>{errorMessage}</span>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => fetchDashboardData()} className="text-xs">
+              Retry
+            </Button>
+          </div>
+        )}
+
+        {/* 4 Overview Metric Cards - Derived Directly from Database */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <Card className="bg-white border-border shadow-sm p-4">
             <div className="text-xs text-text-secondary font-medium">My Submitted Reports</div>
-            <div className="text-2xl font-bold text-navy mt-1">{myReports.length}</div>
+            <div className="text-2xl font-bold text-navy mt-1">
+              {stats ? stats.totalReports : myReports.length}
+            </div>
             <div className="text-[11px] text-text-secondary mt-1">Total recorded grievances</div>
           </Card>
 
           <Card className="bg-white border-border shadow-sm p-4">
             <div className="text-xs text-text-secondary font-medium">Awaiting Inspection</div>
-            <div className="text-2xl font-bold text-text-primary mt-1">{openCount}</div>
+            <div className="text-2xl font-bold text-text-primary mt-1">
+              {stats ? stats.openIssues : openCount}
+            </div>
             <div className="text-[11px] text-text-secondary mt-1">Reported or under review</div>
           </Card>
 
           <Card className="bg-white border-border shadow-sm p-4">
             <div className="text-xs text-text-secondary font-medium">Currently In Progress</div>
-            <div className="text-2xl font-bold text-warning mt-1">{inProgressCount}</div>
+            <div className="text-2xl font-bold text-warning mt-1">
+              {stats ? stats.inProgress : inProgressCount}
+            </div>
             <div className="text-[11px] text-text-secondary mt-1">Active repair assignments</div>
           </Card>
 
           <Card className="bg-white border-border shadow-sm p-4">
             <div className="text-xs text-text-secondary font-medium">Verified Resolved</div>
-            <div className="text-2xl font-bold text-success mt-1">{resolvedCount}</div>
+            <div className="text-2xl font-bold text-success mt-1">
+              {stats ? stats.verifiedResolved : resolvedCount}
+            </div>
             <div className="text-[11px] text-text-secondary mt-1">Citizen-confirmed fixes</div>
           </Card>
         </div>

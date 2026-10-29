@@ -118,10 +118,10 @@ function CityIllustration() {
 // ─── Stats Bar ─────────────────────────────────────────────────────────────────
 
 const FALLBACK_STATS: PlatformStats = {
-  totalReports: 12847,
-  openIssues: 4231,
-  inProgress: 2109,
-  verifiedResolved: 6507,
+  totalReports: 0,
+  openIssues: 0,
+  inProgress: 0,
+  verifiedResolved: 0,
 }
 
 function StatsBar() {

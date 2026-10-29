@@ -38,6 +38,7 @@ export default function AuthorityApplyPage() {
   } = useForm<FormValues>({ resolver: zodResolver(schema) })
 
   const onSubmit = async (data: FormValues) => {
+    if (isSubmitting) return
     setError(null)
     try {
       const response = await api.post('/auth/authority/apply', data)
@@ -46,8 +47,11 @@ export default function AuthorityApplyPage() {
       } else {
         setError(response.data.error?.message || 'Application failed')
       }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Submission failed. Please try again.')
+    } catch (err: any) {
+      const msg =
+        err.response?.data?.error?.message ||
+        (err instanceof Error ? err.message : 'Submission failed. Please try again.')
+      setError(msg)
     }
   }
 

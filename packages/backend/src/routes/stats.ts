@@ -48,7 +48,8 @@ router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
       }),
     ])
 
-    const openIssues = reportedCount + underReviewCount + assignedCount + inProgressCount + disputedCount + reopenedCount
+    const openIssues = reportedCount + underReviewCount + disputedCount + reopenedCount
+    const inProgress = assignedCount + inProgressCount
     const resolutionRate = totalReports > 0 ? Math.round((verifiedResolvedCount / totalReports) * 100) : 0
 
     res.json({
@@ -56,7 +57,7 @@ router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
       data: {
         totalReports,
         openIssues,
-        inProgress: inProgressCount,
+        inProgress,
         verifiedResolved: verifiedResolvedCount,
         resolutionClaimed: resolutionClaimedCount,
         disputed: disputedCount,

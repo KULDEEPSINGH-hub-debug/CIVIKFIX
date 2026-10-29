@@ -9,6 +9,7 @@ import { Input } from '../components/ui/Input'
 import { FormField } from '../components/ui/FormField'
 import { Alert } from '../components/ui/Alert'
 import { useAuth } from '../hooks/useAuth'
+import api from '../lib/api'
 
 const schema = z.object({
   email: z.string().email('Enter a valid email address'),
@@ -20,7 +21,7 @@ type FormValues = z.infer<typeof schema>
 export default function AuthorityLoginPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { login } = useAuth()
+  const { refreshUser } = useAuth()
   const navigate = useNavigate()
 
   const {
@@ -30,12 +31,21 @@ export default function AuthorityLoginPage() {
   } = useForm<FormValues>({ resolver: zodResolver(schema) })
 
   const onSubmit = async (data: FormValues) => {
+    if (isSubmitting) return
     setError(null)
     try {
-      await login(data.email, data.password)
-      navigate('/authority/dashboard')
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Login failed.')
+      const res = await api.post('/auth/authority/login', data)
+      if (res.data.success) {
+        await refreshUser()
+        navigate('/authority/dashboard')
+      } else {
+        setError(res.data.error?.message || 'Login failed.')
+      }
+    } catch (err: any) {
+      const msg =
+        err.response?.data?.error?.message ||
+        (err instanceof Error ? err.message : 'Login failed.')
+      setError(msg)
     }
   }
 

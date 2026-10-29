@@ -8,6 +8,7 @@ interface AuthContextType {
   loading: boolean
   isAuthenticated: boolean
   login: (email: string, password: string) => Promise<void>
+  loginWithGoogle: (payload: { credential?: string; code?: string; redirectUri?: string }) => Promise<void>
   logout: () => Promise<void>
   register: (data: RegisterData) => Promise<void>
   refreshUser: () => Promise<void>
@@ -51,6 +52,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  const loginWithGoogle = async (payload: { credential?: string; code?: string; redirectUri?: string }) => {
+    const response = await api.post('/auth/google', payload)
+    if (response.data.success) {
+      setUser(response.data.data.user)
+    } else {
+      throw new Error(response.data.error?.message || 'Google authentication failed')
+    }
+  }
+
   const logout = async () => {
     await api.post('/auth/logout')
     setUser(null)
@@ -71,6 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loading: isLoading,
         isAuthenticated: !!user,
         login,
+        loginWithGoogle,
         logout,
         register,
         refreshUser,

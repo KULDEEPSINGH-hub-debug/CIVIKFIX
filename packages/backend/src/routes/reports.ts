@@ -92,6 +92,7 @@ router.get('/', async (req: AuthenticatedRequest, res: Response, next: NextFunct
         select: {
           id: true,
           publicId: true,
+          reporterId: true,
           title: true,
           description: true,
           category: true,
@@ -311,6 +312,120 @@ router.post('/reverse-geocode', async (req: Request, res: Response, next: NextFu
 
     const geo = await reverseGeocode(latitude, longitude)
     res.json({ success: true, data: geo })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// ─── GET /reports/mine (Authenticated Citizen's Own Reports & Database Metrics) ───
+router.get('/mine', requireAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.user!.id
+    const { status, category, search, page: pg, limit: lim } = req.query as Record<string, string>
+    const { page, limit, skip } = parsePagination({ page: pg, limit: lim })
+
+    const where: any = { reporterId: userId }
+    if (status) where.status = status
+    if (category) where.category = category
+    if (search && search.trim()) {
+      const s = search.trim()
+      where.OR = [
+        { title: { contains: s } },
+        { description: { contains: s } },
+        { publicId: { contains: s } },
+        { address: { contains: s } },
+      ]
+    }
+
+    const [
+      items,
+      filteredTotal,
+      allTimeCount,
+      reportedCount,
+      underReviewCount,
+      assignedCount,
+      inProgressCount,
+      resolutionClaimedCount,
+      verifiedResolvedCount,
+      disputedCount,
+      reopenedCount,
+    ] = await Promise.all([
+      prisma.report.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+        include: {
+          attachments: true,
+          assignedDept: { select: { id: true, name: true, contactEmail: true, contactPhone: true } },
+          suggestedDept: { select: { id: true, name: true } },
+          _count: { select: { support: true, comments: true, followers: true } },
+        },
+      }),
+      prisma.report.count({ where }),
+      prisma.report.count({ where: { reporterId: userId } }),
+      prisma.report.count({ where: { reporterId: userId, status: 'REPORTED' } }),
+      prisma.report.count({ where: { reporterId: userId, status: 'UNDER_REVIEW' } }),
+      prisma.report.count({ where: { reporterId: userId, status: 'ASSIGNED' } }),
+      prisma.report.count({ where: { reporterId: userId, status: 'IN_PROGRESS' } }),
+      prisma.report.count({ where: { reporterId: userId, status: 'RESOLUTION_CLAIMED' } }),
+      prisma.report.count({ where: { reporterId: userId, status: 'VERIFIED_RESOLVED' } }),
+      prisma.report.count({ where: { reporterId: userId, status: 'DISPUTED' } }),
+      prisma.report.count({ where: { reporterId: userId, status: 'REOPENED' } }),
+    ])
+
+    // Mutually exclusive, accurate database-backed metrics for this citizen
+    const stats = {
+      totalReports: allTimeCount,
+      openIssues: reportedCount + underReviewCount + disputedCount + reopenedCount,
+      inProgress: assignedCount + inProgressCount,
+      resolutionClaimed: resolutionClaimedCount,
+      verifiedResolved: verifiedResolvedCount,
+    }
+
+    res.json({
+      success: true,
+      data: {
+        items,
+        total: filteredTotal,
+        page,
+        limit,
+        totalPages: Math.ceil(filteredTotal / limit),
+        stats,
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// ─── GET /reports/followed (Issues followed by the Citizen) ───────────────────
+router.get('/followed', requireAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.user!.id
+    const follows = await prisma.followedIssue.findMany({
+      where: { userId },
+      include: {
+        report: {
+          include: {
+            attachments: true,
+            assignedDept: { select: { id: true, name: true } },
+            _count: { select: { support: true, comments: true, followers: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    const items = follows.map((f) => f.report).filter(Boolean)
+
+    res.json({
+      success: true,
+      data: {
+        items,
+        total: items.length,
+      },
+    })
   } catch (err) {
     next(err)
   }

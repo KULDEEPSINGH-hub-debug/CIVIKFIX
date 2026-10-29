@@ -9,6 +9,7 @@ import { Input } from '../components/ui/Input'
 import { FormField } from '../components/ui/FormField'
 import { Checkbox } from '../components/ui/FormField'
 import { Alert } from '../components/ui/Alert'
+import { GoogleLoginButton } from '../components/auth/GoogleLoginButton'
 import { useAuth } from '../hooks/useAuth'
 
 const registerSchema = z
@@ -107,6 +108,20 @@ export default function RegisterPage() {
               {error}
             </Alert>
           )}
+
+          {/* Google Sign-in */}
+          <div className="mb-6">
+            <GoogleLoginButton text="signup" redirectPath="/dashboard" />
+          </div>
+
+          <div className="relative mb-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-border" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-surface px-2 text-text-secondary font-medium">Or create account with email</span>
+            </div>
+          </div>
 
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
             <FormField label="Display Name" htmlFor="displayName" required error={errors.displayName?.message}>
