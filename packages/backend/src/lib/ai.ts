@@ -1,4 +1,24 @@
 import { z } from 'zod'
+import path from 'path'
+import fs from 'fs'
+import dotenv from 'dotenv'
+import { GoogleGenerativeAI } from '@google/generative-ai'
+
+// Ensure .env is loaded if this module is invoked standalone or before server bootstrap
+if (!process.env.GEMINI_API_KEY) {
+  const envCandidates = [
+    path.resolve(__dirname, '../../.env'),
+    path.resolve(__dirname, '../.env'),
+    path.resolve(process.cwd(), 'packages/backend/.env'),
+    path.resolve(process.cwd(), '.env'),
+  ]
+  for (const p of envCandidates) {
+    if (fs.existsSync(p)) {
+      dotenv.config({ path: p })
+      break
+    }
+  }
+}
 
 export interface AiAnalysisResult {
   isCivicIssue: boolean
@@ -35,6 +55,8 @@ const aiResponseSchema = z.object({
 })
 
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp']
+const PRIMARY_MODEL = 'gemini-3.5-flash-lite'
+const FALLBACK_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-1.5-flash']
 
 function getTestOrMockAnalysis(
   title?: string,
@@ -135,7 +157,6 @@ export async function analyzeReport(
   if (!apiKey) {
     // In test environment or if explicit MOCK_AI is enabled, return valid test structured result
     if (process.env.NODE_ENV === 'test' || process.env.MOCK_AI === 'true') {
-      console.log('[AI] Running in test/mock mode (NODE_ENV=test or MOCK_AI=true).')
       return getTestOrMockAnalysis(title, description, imageBase64)
     }
 
@@ -147,21 +168,25 @@ export async function analyzeReport(
     throw error
   }
 
-  try {
-    const prompt = `
-You are an expert AI civic engineer for CivicFix, an Indian public infrastructure problem reporting platform.
-Examine this photograph (and any optional title/description provided) and determine:
+  // In test environment when MOCK_AI is enabled, skip external API calls
+  if (process.env.NODE_ENV === 'test' && process.env.MOCK_AI === 'true') {
+    return getTestOrMockAnalysis(title, description, imageBase64)
+  }
 
-1. Does the photograph or text show a genuine civic infrastructure or public maintenance problem in a city, neighborhood, or road (e.g. potholes, road cave-ins, broken streetlights, dark public lamps, garbage dumping, sewage or drainage overflow, water pipeline burst, broken footpath, damaged traffic signals)?
+  const prompt = `You are an expert AI civic engineer for CivicFix, an Indian public infrastructure problem reporting platform.
+Examine this photograph (and any optional citizen title or description context provided) and determine:
+
+1. Does the photograph or context show a genuine civic infrastructure or public municipal maintenance problem in a city, neighborhood, or public road (such as road damage, potholes, asphalt cracks, broken streetlights, dark public lamps, garbage dumping, sewage or drainage overflow, water pipeline burst, broken footpath, damaged traffic signals)?
 2. If YES:
    - "isCivicIssue": true
    - "title": A concise, clear, factual title (between 10 and 60 characters) describing the primary civic issue (e.g. "Deep Road Pothole Near Intersection").
-   - "description": A factual, detailed engineering observation (minimum 25 words) describing the physical defect visible in the photograph, surrounding road or neighborhood context, and safety hazards to citizens and vehicles. Do NOT invent unobservable facts like exact street names or how long it has been broken.
+   - "description": A factual, detailed engineering observation (minimum 25 words) describing the physical defect visible in the photograph, surrounding roadway or neighborhood context, and safety hazards to citizens and vehicles. Do NOT invent unobservable facts like exact street names or how long it has been broken.
    - "category": Must be one exact match from: ["ROAD_DAMAGE", "STREETLIGHT", "GARBAGE", "WATER_LEAKAGE", "DRAINAGE", "TRAFFIC_SIGNAL", "PUBLIC_INFRASTRUCTURE", "OTHER"].
    - "severity": Must be one exact match from: ["LOW", "MEDIUM", "HIGH", "CRITICAL"].
    - "confidence": A number between 0.0 and 1.0 indicating visual certainty.
    - "evidenceSummary": A one-sentence summary of the visual evidence.
-3. If NO (for example: an indoor selfie, random pet, receipt, screenshot of text, or irrelevant image):
+   - "additionalInformationNeeded": An array of strings describing any missing details needed from the citizen (e.g. ["Nearest cross street landmark"]).
+3. If NO (for example: an indoor selfie, random pet, receipt, screenshot of text, household furniture, or irrelevant photo):
    - "isCivicIssue": false
    - "title": ""
    - "description": ""
@@ -169,68 +194,90 @@ Examine this photograph (and any optional title/description provided) and determ
    - "severity": "LOW"
    - "confidence": 0.2
    - "evidenceSummary": "No visible civic infrastructure issue was identified in this image."
+   - "additionalInformationNeeded": []
 
-Return ONLY a raw JSON object matching the schema. No markdown code blocks, no backticks, no explanations.`
+Return ONLY a raw JSON object matching the schema. No markdown code blocks, no backticks, no markdown formatting.`
 
-    const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [
-      { text: prompt },
-    ]
+  try {
+    const genAI = new GoogleGenerativeAI(apiKey)
+    const modelsToTry = [PRIMARY_MODEL, ...FALLBACK_MODELS]
+    let lastError: any = null
+    let responseText = ''
 
-    if (title || description) {
-      parts.push({
-        text: `Citizen Context:\nTitle: ${title || 'Not provided'}\nDescription: ${description || 'Not provided'}`,
-      })
-    }
-
-    if (imageBase64) {
-      // Strip data URL prefix if present (e.g. data:image/jpeg;base64,...)
-      const cleanBase64 = imageBase64.replace(/^data:image\/[a-z0-9.+]+;base64,/i, '').trim()
-      if (cleanBase64.length > 0) {
-        parts.push({
-          inlineData: {
-            mimeType: imageMimeType,
-            data: cleanBase64,
-          },
-        })
-      }
-    }
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts }],
+    for (const modelName of modelsToTry) {
+      try {
+        const model = genAI.getGenerativeModel({
+          model: modelName,
           generationConfig: {
             temperature: 0.1,
             responseMimeType: 'application/json',
           },
-        }),
+        })
+
+        const contentParts: any[] = [{ text: prompt }]
+
+        if (title?.trim() || description?.trim()) {
+          contentParts.push({
+            text: `Citizen Context:\nTitle: ${title?.trim() || 'Not provided'}\nDescription: ${description?.trim() || 'Not provided'}`,
+          })
+        }
+
+        if (imageBase64) {
+          const cleanBase64 = imageBase64.replace(/^data:image\/[a-z0-9.+]+;base64,/i, '').trim()
+          if (cleanBase64.length > 0) {
+            contentParts.push({
+              inlineData: {
+                mimeType: effectiveMime,
+                data: cleanBase64,
+              },
+            })
+          }
+        }
+
+        const result = await model.generateContent(contentParts)
+        responseText = result.response.text()
+        if (responseText) {
+          break // Successfully generated
+        }
+      } catch (callErr: any) {
+        lastError = callErr
+        const status = callErr?.status || callErr?.statusCode
+        // If 404 (model deprecated/not available), try fallback model
+        if (status === 404) {
+          continue
+        }
+        // For other fatal errors (auth, quota, network), fail fast
+        throw callErr
       }
-    )
-
-    if (!response.ok) {
-      const errBody = await response.text().catch(() => '')
-      throw new Error(`Gemini API error: ${response.status} ${response.statusText} - ${errBody}`)
     }
 
-    const data = (await response.json()) as {
-      candidates?: Array<{
-        content?: { parts?: Array<{ text?: string }> }
-      }>
+    if (!responseText) {
+      throw lastError || new Error('No response generated from Gemini Vision models.')
     }
 
-    let text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-    text = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim()
-
-    const rawJson = JSON.parse(text)
+    let cleanJson = responseText.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim()
+    const rawJson = JSON.parse(cleanJson)
     const validated = aiResponseSchema.parse(rawJson)
+
+    // Ensure minimum lengths required by reporting wizard form validation if civic issue is detected
+    let finalTitle = validated.title.trim()
+    let finalDesc = validated.description.trim()
+
+    if (validated.isCivicIssue) {
+      if (finalTitle.length < 10) {
+        finalTitle = `${validated.category.replace(/_/g, ' ')} Issue Reported`
+      }
+      if (finalDesc.length < 20) {
+        finalDesc =
+          validated.evidenceSummary ||
+          `Visible infrastructure defect identified: ${validated.category.toLowerCase().replace(/_/g, ' ')}. Requires municipal inspection.`
+      }
+    }
 
     return {
       isCivicIssue: validated.isCivicIssue,
-      title: validated.title,
-      description: validated.description,
+      title: finalTitle,
+      description: finalDesc,
       category: validated.category,
       severity: validated.severity,
       confidence: validated.confidence,
@@ -239,9 +286,59 @@ Return ONLY a raw JSON object matching the schema. No markdown code blocks, no b
       isDemoMode: false,
     }
   } catch (err: any) {
-    console.error('[AI] Gemini Vision analysis failed:', err?.message || err)
+    const rawMsg = (err?.message || '').toLowerCase()
+    const errStatus = err?.status || err?.statusCode
+
+    if (
+      errStatus === 400 ||
+      errStatus === 401 ||
+      errStatus === 403 ||
+      rawMsg.includes('api key not valid') ||
+      rawMsg.includes('api_key_invalid') ||
+      rawMsg.includes('unauthorized')
+    ) {
+      const authErr = new Error(
+        'Google Gemini API authentication failed. The provided API key is invalid or unauthorized. Please verify GEMINI_API_KEY in packages/backend/.env.'
+      )
+      ;(authErr as any).code = 'API_KEY_INVALID'
+      throw authErr
+    }
+
+    if (
+      errStatus === 429 ||
+      rawMsg.includes('resource_exhausted') ||
+      rawMsg.includes('quota') ||
+      rawMsg.includes('rate limit')
+    ) {
+      const quotaErr = new Error(
+        'Google Gemini API rate limit or quota exceeded. Please retry in a few moments or continue manually.'
+      )
+      ;(quotaErr as any).code = 'QUOTA_EXCEEDED'
+      throw quotaErr
+    }
+
+    if (
+      rawMsg.includes('enotfound') ||
+      rawMsg.includes('fetch failed') ||
+      rawMsg.includes('econnrefused') ||
+      rawMsg.includes('network') ||
+      rawMsg.includes('etimedout')
+    ) {
+      const netErr = new Error(
+        'Network connection to Google Gemini API failed. Please check network connectivity or continue manually.'
+      )
+      ;(netErr as any).code = 'NETWORK_ERROR'
+      throw netErr
+    }
+
+    if (err instanceof SyntaxError || err?.name === 'ZodError') {
+      const parseErr = new Error('AI provider returned an unparseable response structure. You can continue manually.')
+      ;(parseErr as any).code = 'INVALID_AI_RESPONSE'
+      throw parseErr
+    }
+
     const serviceErr = new Error(
-      err?.message || 'Image analysis is temporarily unavailable. You can retry or continue manually.'
+      'Image analysis is temporarily unavailable. You can retry or continue manually.'
     )
     ;(serviceErr as any).code = 'AI_SERVICE_UNAVAILABLE'
     throw serviceErr

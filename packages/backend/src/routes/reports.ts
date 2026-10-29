@@ -247,6 +247,26 @@ router.post('/analyze-ai', async (req: Request, res: Response, next: NextFunctio
       })
       return
     }
+    if (err?.code === 'API_KEY_INVALID') {
+      res.status(502).json({
+        success: false,
+        error: {
+          code: 'API_KEY_INVALID',
+          message: err.message || 'Gemini API authentication failed. Please verify GEMINI_API_KEY in packages/backend/.env.',
+        },
+      })
+      return
+    }
+    if (err?.code === 'QUOTA_EXCEEDED') {
+      res.status(429).json({
+        success: false,
+        error: {
+          code: 'QUOTA_EXCEEDED',
+          message: err.message || 'Gemini API rate limit or quota exceeded. Please retry in a moment or continue manually.',
+        },
+      })
+      return
+    }
     if (err?.code === 'INVALID_IMAGE_FORMAT' || err?.code === 'UNSUPPORTED_MEDIA_TYPE' || err?.code === 'PAYLOAD_TOO_LARGE') {
       res.status(400).json({
         success: false,
@@ -257,11 +277,21 @@ router.post('/analyze-ai', async (req: Request, res: Response, next: NextFunctio
       })
       return
     }
+    if (err?.code === 'NETWORK_ERROR' || err?.code === 'INVALID_AI_RESPONSE') {
+      res.status(502).json({
+        success: false,
+        error: {
+          code: err.code,
+          message: err.message,
+        },
+      })
+      return
+    }
     res.status(503).json({
       success: false,
       error: {
         code: 'AI_SERVICE_UNAVAILABLE',
-        message: 'Image analysis is temporarily unavailable. You can retry or continue manually.',
+        message: err?.message || 'Image analysis is temporarily unavailable. You can retry or continue manually.',
       },
     })
   }

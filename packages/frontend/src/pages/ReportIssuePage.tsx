@@ -230,12 +230,19 @@ export default function ReportIssuePage() {
       console.warn('AI analysis error:', err)
       setAiStatus('error')
       const serverCode = err?.response?.data?.error?.code
+      const serverMessage = err?.response?.data?.error?.message
       if (serverCode === 'API_KEY_MISSING') {
         setAiStatusMessage(
           'Image analysis is temporarily unavailable (GEMINI_API_KEY is not configured in packages/backend/.env). You can retry or continue manually.'
         )
+      } else if (serverCode === 'API_KEY_INVALID') {
+        setAiStatusMessage(
+          'Gemini API authentication failed. Please verify GEMINI_API_KEY in packages/backend/.env or continue manually.'
+        )
+      } else if (serverCode === 'QUOTA_EXCEEDED') {
+        setAiStatusMessage('Gemini API rate limit or quota exceeded. Please wait a moment or continue manually.')
       } else {
-        setAiStatusMessage('Image analysis is temporarily unavailable. You can retry or continue manually.')
+        setAiStatusMessage(serverMessage || 'Image analysis is temporarily unavailable. You can retry or continue manually.')
       }
     } finally {
       setAiAnalyzing(false)

@@ -1,9 +1,24 @@
+import path from 'path'
+import fs from 'fs'
+import dotenv from 'dotenv'
+
+// Load environment variables from packages/backend/.env before other imports
+const envCandidates = [
+  path.resolve(__dirname, '../.env'),
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(process.cwd(), 'packages/backend/.env'),
+]
+for (const envPath of envCandidates) {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath })
+    break
+  }
+}
+
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
 import session from 'express-session'
-import path from 'path'
-import fs from 'fs'
 import { apiRateLimiter } from './middleware/rateLimiter'
 import { errorHandler } from './middleware/errorHandler'
 import authRoutes from './routes/auth'
@@ -110,6 +125,8 @@ if (process.env.NODE_ENV !== 'test') {
     console.log(`[CivicFix API] Server running at http://localhost:${PORT}`)
     console.log(`[CivicFix API] Environment: ${process.env.NODE_ENV || 'development'}`)
     console.log(`[CivicFix API] Health check: http://localhost:${PORT}/api/health`)
+    const hasKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0)
+    console.log(`[CivicFix API] Gemini Vision configured: ${hasKey}`)
   })
 }
 
