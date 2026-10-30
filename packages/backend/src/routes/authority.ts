@@ -1,9 +1,20 @@
 import { Router, Request, Response, NextFunction } from 'express'
+import multer from 'multer'
 import { z } from 'zod'
 import prisma from '../lib/prisma'
 import { requireApprovedAuthority, requireAuth } from '../middleware/auth'
+import { getUploadsDir, uploadEvidenceFile } from '../lib/storage'
 import type { AuthenticatedRequest } from '../types'
 import { ReportStatus } from '../types'
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+    cb(null, allowed.includes(file.mimetype))
+  },
+})
 
 const router = Router()
 
@@ -307,6 +318,34 @@ router.patch('/reports/:id/status', requireApprovedAuthority, async (req: Authen
     next(err)
   }
 })
+
+// POST /api/v1/authority/upload-evidence - Upload evidence image to Cloudinary/storage
+router.post(
+  '/upload-evidence',
+  requireApprovedAuthority,
+  upload.single('file'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const file = req.file
+      if (!file) {
+        res.status(400).json({ success: false, error: { message: 'No file uploaded', code: 'NO_FILE' } })
+        return
+      }
+
+      const result = await uploadEvidenceFile(file, 'civicfix/resolution-evidence')
+      res.json({
+        success: true,
+        data: {
+          url: result.url,
+          publicId: result.publicId,
+          provider: result.provider,
+        },
+      })
+    } catch (err) {
+      next(err)
+    }
+  }
+)
 
 // POST /api/v1/authority/reports/:id/evidence - Upload resolution evidence
 const evidenceSchema = z.object({

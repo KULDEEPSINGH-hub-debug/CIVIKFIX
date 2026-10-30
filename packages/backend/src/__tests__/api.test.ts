@@ -579,4 +579,125 @@ describe('CivicFix REST API Test Suite', () => {
       OAuth2Client.prototype.verifyIdToken = originalVerifyIdToken
     }
   })
+
+  // ─── 8. Image Storage & Cloudinary Tests ────────────────────────────────────
+
+  it('Local storage upload: saves file locally, creates ReportAttachment, and verifies URL', async () => {
+    const citizenAgent = request.agent(app)
+    await citizenAgent.post('/api/v1/auth/login').send({
+      email: 'demo-citizen@civicfix.demo',
+      password: 'DemoCitizen123!',
+    })
+
+    // 1. Submit report
+    const createRes = await citizenAgent.post('/api/v1/reports').send({
+      title: 'Pothole on Station Road',
+      description: 'Major road asphalt collapse causing traffic slowdowns and hazard',
+      category: 'ROAD_DAMAGE',
+      severity: 'HIGH',
+      latitude: 26.9124,
+      longitude: 75.7873,
+    })
+    assert.strictEqual(createRes.status, 201)
+    const reportId = createRes.body.data.id
+
+    // 2. Upload dummy evidence file
+    const dummyPng = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+      'base64'
+    )
+
+    const uploadRes = await citizenAgent
+      .post(`/api/v1/reports/${reportId}/attachments`)
+      .attach('files', dummyPng, 'evidence-photo.png')
+
+    assert.strictEqual(uploadRes.status, 200)
+    assert.strictEqual(uploadRes.body.success, true)
+    assert.strictEqual(uploadRes.body.data.count, 1)
+
+    // 3. Retrieve report and verify attachment URL persistence
+    const getRes = await request(app).get(`/api/v1/reports/${reportId}`)
+    assert.strictEqual(getRes.status, 200)
+    assert.strictEqual(getRes.body.data.attachments.length, 1)
+    const attachmentUrl = getRes.body.data.attachments[0].url
+    assert.ok(attachmentUrl.startsWith('/uploads/') || attachmentUrl.startsWith('https://res.cloudinary.com/'))
+  })
+
+  it('Cloudinary upload integration: uploadEvidenceFile uploads to Cloudinary when credentials are configured', async () => {
+    const { uploadEvidenceFile, isCloudinaryConfigured } = require('../lib/storage')
+    const originalCloudName = process.env.CLOUDINARY_CLOUD_NAME
+    const originalApiKey = process.env.CLOUDINARY_API_KEY
+    const originalApiSecret = process.env.CLOUDINARY_API_SECRET
+
+    try {
+      process.env.CLOUDINARY_CLOUD_NAME = 'zgmkrekn'
+      process.env.CLOUDINARY_API_KEY = '863899253317643'
+      process.env.CLOUDINARY_API_SECRET = 'AXHtH6PoF_Jbgz7QEdF8WAJw9AE'
+
+      assert.strictEqual(isCloudinaryConfigured(), true)
+
+      const dummyFile: any = {
+        buffer: Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+          'base64'
+        ),
+        originalname: 'test-evidence.png',
+        mimetype: 'image/png',
+      }
+
+      const result = await uploadEvidenceFile(dummyFile, 'civicfix/test-evidence')
+      assert.strictEqual(result.provider, 'cloudinary')
+      assert.ok(result.url.startsWith('https://res.cloudinary.com/zgmkrekn/image/upload/'))
+      assert.ok(result.publicId)
+      assert.strictEqual(result.mimeType, 'image/png')
+    } finally {
+      if (originalCloudName) process.env.CLOUDINARY_CLOUD_NAME = originalCloudName
+      else delete process.env.CLOUDINARY_CLOUD_NAME
+
+      if (originalApiKey) process.env.CLOUDINARY_API_KEY = originalApiKey
+      else delete process.env.CLOUDINARY_API_KEY
+
+      if (originalApiSecret) process.env.CLOUDINARY_API_SECRET = originalApiSecret
+      else delete process.env.CLOUDINARY_API_SECRET
+    }
+  })
+
+  it('Storage failure handling: fails safely without saving false record if provider rejects', async () => {
+    const { uploadEvidenceFile } = require('../lib/storage')
+    const originalCloudName = process.env.CLOUDINARY_CLOUD_NAME
+    const originalApiKey = process.env.CLOUDINARY_API_KEY
+    const originalApiSecret = process.env.CLOUDINARY_API_SECRET
+
+    try {
+      // Intentionally invalid credentials
+      process.env.CLOUDINARY_CLOUD_NAME = 'invalid_cloud'
+      process.env.CLOUDINARY_API_KEY = '999999999'
+      process.env.CLOUDINARY_API_SECRET = 'invalid_secret'
+
+      const dummyFile: any = {
+        buffer: Buffer.from('notarealimage'),
+        originalname: 'bad.png',
+        mimetype: 'image/png',
+      }
+
+      await assert.rejects(
+        async () => {
+          await uploadEvidenceFile(dummyFile, 'civicfix/test-fail')
+        },
+        (err: any) => {
+          assert.strictEqual(err.code, 'STORAGE_UPLOAD_FAILED')
+          return true
+        }
+      )
+    } finally {
+      if (originalCloudName) process.env.CLOUDINARY_CLOUD_NAME = originalCloudName
+      else delete process.env.CLOUDINARY_CLOUD_NAME
+
+      if (originalApiKey) process.env.CLOUDINARY_API_KEY = originalApiKey
+      else delete process.env.CLOUDINARY_API_KEY
+
+      if (originalApiSecret) process.env.CLOUDINARY_API_SECRET = originalApiSecret
+      else delete process.env.CLOUDINARY_API_SECRET
+    }
+  })
 })

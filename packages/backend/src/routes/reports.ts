@@ -7,7 +7,7 @@ import { requireAuth } from '../middleware/auth'
 import { analyzeReport } from '../lib/ai'
 import { reverseGeocode } from '../lib/geocoding'
 import { generatePublicId } from '../lib/publicId'
-import { getUploadsDir, getFileSizeBytes } from '../lib/storage'
+import { getUploadsDir, getFileSizeBytes, uploadEvidenceFile } from '../lib/storage'
 import type { AuthenticatedRequest } from '../types'
 import { IssueCategory, Severity, ReportStatus } from '../types'
 
@@ -617,16 +617,34 @@ router.post(
         return
       }
 
+      // Upload files to Cloudinary (in production) or local storage (in dev)
+      const uploadResults = await Promise.all(
+        files.map((file) => uploadEvidenceFile(file, `civicfix/reports/${report.publicId}`))
+      )
+
       const attachments = await prisma.reportAttachment.createMany({
-        data: files.map((file) => ({
+        data: uploadResults.map((res) => ({
           reportId: report.id,
-          url: `/uploads/${file.filename}`,
-          mimeType: file.mimetype,
-          sizeBytes: getFileSizeBytes(file.path),
+          url: res.url,
+          mimeType: res.mimeType,
+          sizeBytes: res.bytes,
         })),
       })
 
-      res.json({ success: true, data: { count: attachments.count } })
+      // Fetch created attachments to return complete data
+      const createdAttachments = await prisma.reportAttachment.findMany({
+        where: { reportId: report.id },
+        orderBy: { uploadedAt: 'desc' },
+        take: uploadResults.length,
+      })
+
+      res.json({
+        success: true,
+        data: {
+          count: attachments.count,
+          attachments: createdAttachments,
+        },
+      })
     } catch (err) {
       next(err)
     }
