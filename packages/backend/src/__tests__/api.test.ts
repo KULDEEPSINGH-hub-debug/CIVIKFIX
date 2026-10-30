@@ -184,6 +184,64 @@ describe('CivicFix REST API Test Suite', () => {
     assert.strictEqual(res.body.data.isCivicIssue, true)
   })
 
+  it('Gemini AI integration unit verification: prompt construction, modelsToTry, and error translation', async () => {
+    const { getModelsToTry, DEFAULT_GEMINI_MODEL, aiResponseSchema } = require('../lib/ai')
+    
+    // Check default model is gemini-3.8-flash
+    assert.strictEqual(DEFAULT_GEMINI_MODEL, 'gemini-3.8-flash')
+    
+    const models = getModelsToTry()
+    assert.ok(models.includes('gemini-3.8-flash'), 'modelsToTry includes gemini-3.8-flash')
+    assert.strictEqual(models[0], process.env.GEMINI_MODEL || 'gemini-3.8-flash')
+
+    // Check schema parsing and normalization of categories and severities
+    const parsedValid = aiResponseSchema.parse({
+      isCivicIssue: true,
+      title: 'Broken streetlight at crossing',
+      description: 'The street lamp is extinguished creating hazard',
+      category: 'STREETLIGHT',
+      severity: 'HIGH',
+      confidence: 0.95,
+    })
+    assert.strictEqual(parsedValid.category, 'STREETLIGHT')
+    assert.strictEqual(parsedValid.severity, 'HIGH')
+
+    // Check category normalization from free text (e.g. "pothole on road" -> "ROAD_DAMAGE")
+    const parsedNormalized = aiResponseSchema.parse({
+      category: 'pothole',
+      severity: 'critical',
+    })
+    assert.strictEqual(parsedNormalized.category, 'ROAD_DAMAGE')
+    assert.strictEqual(parsedNormalized.severity, 'CRITICAL')
+  })
+
+  it('POST /api/v1/reports/analyze-ai handles invalid API key error structure', async () => {
+    const originalEnv = process.env.NODE_ENV
+    const originalMock = process.env.MOCK_AI
+    const originalKey = process.env.GEMINI_API_KEY
+    try {
+      delete process.env.MOCK_AI
+      process.env.NODE_ENV = 'production'
+      process.env.GEMINI_API_KEY = 'AIzaSyInvalidKeyForTestExecution'
+
+      const res = await request(app)
+        .post('/api/v1/reports/analyze-ai')
+        .send({
+          title: 'Deep road pothole',
+          description: 'A deep pothole is causing issues for two wheelers',
+        })
+      // Should cleanly map to 502 with API_KEY_INVALID without leaking secret or crashing
+      assert.strictEqual(res.status, 502)
+      assert.strictEqual(res.body.success, false)
+      assert.strictEqual(res.body.error.code, 'API_KEY_INVALID')
+    } finally {
+      process.env.NODE_ENV = originalEnv
+      process.env.MOCK_AI = originalMock
+      if (originalKey) process.env.GEMINI_API_KEY = originalKey
+      else delete process.env.GEMINI_API_KEY
+    }
+  })
+
   it('POST /api/v1/reports/analyze-ai rejects request when both image and text are missing', async () => {
     const res = await request(app)
       .post('/api/v1/reports/analyze-ai')

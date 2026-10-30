@@ -2,7 +2,7 @@ import { z } from 'zod'
 import path from 'path'
 import fs from 'fs'
 import dotenv from 'dotenv'
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { GoogleGenAI } from '@google/genai'
 
 // Ensure .env is loaded if this module is invoked standalone or before server bootstrap
 if (!process.env.GEMINI_API_KEY) {
@@ -32,33 +32,67 @@ export interface AiAnalysisResult {
   isDemoMode?: boolean
 }
 
-const aiResponseSchema = z.object({
+export const VALID_CATEGORIES = [
+  'ROAD_DAMAGE',
+  'STREETLIGHT',
+  'GARBAGE',
+  'WATER_LEAKAGE',
+  'DRAINAGE',
+  'TRAFFIC_SIGNAL',
+  'PUBLIC_INFRASTRUCTURE',
+  'OTHER',
+] as const
+
+export const VALID_SEVERITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const
+
+export const aiResponseSchema = z.object({
   isCivicIssue: z.boolean().default(true),
   title: z.string().default(''),
   description: z.string().default(''),
-  category: z
-    .enum([
-      'ROAD_DAMAGE',
-      'STREETLIGHT',
-      'GARBAGE',
-      'WATER_LEAKAGE',
-      'DRAINAGE',
-      'TRAFFIC_SIGNAL',
-      'PUBLIC_INFRASTRUCTURE',
-      'OTHER',
-    ])
-    .default('OTHER'),
-  severity: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).default('MEDIUM'),
+  category: z.preprocess((val) => {
+    if (typeof val === 'string') {
+      const normalized = val.trim().toUpperCase().replace(/[\s-]+/g, '_')
+      if ((VALID_CATEGORIES as readonly string[]).includes(normalized)) return normalized
+      if (normalized.includes('ROAD') || normalized.includes('POTHOLE') || normalized.includes('ASPHALT')) return 'ROAD_DAMAGE'
+      if (normalized.includes('LIGHT') || normalized.includes('LAMP')) return 'STREETLIGHT'
+      if (normalized.includes('WASTE') || normalized.includes('TRASH') || normalized.includes('GARBAGE')) return 'GARBAGE'
+      if (normalized.includes('WATER') || normalized.includes('PIPE')) return 'WATER_LEAKAGE'
+      if (normalized.includes('DRAIN') || normalized.includes('SEWER') || normalized.includes('MANHOLE')) return 'DRAINAGE'
+      if (normalized.includes('SIGNAL') || normalized.includes('TRAFFIC')) return 'TRAFFIC_SIGNAL'
+      if (normalized.includes('INFRASTRUCTURE') || normalized.includes('FOOTPATH') || normalized.includes('SIDEWALK')) return 'PUBLIC_INFRASTRUCTURE'
+    }
+    return val
+  }, z.enum(VALID_CATEGORIES).default('OTHER')),
+  severity: z.preprocess((val) => {
+    if (typeof val === 'string') {
+      const normalized = val.trim().toUpperCase()
+      if ((VALID_SEVERITIES as readonly string[]).includes(normalized)) return normalized
+    }
+    return val
+  }, z.enum(VALID_SEVERITIES).default('MEDIUM')),
   confidence: z.number().min(0).max(1).default(0.85),
   evidenceSummary: z.string().optional(),
   additionalInformationNeeded: z.array(z.string()).optional(),
 })
 
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp']
-const PRIMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash'
-const FALLBACK_MODELS = ['gemini-1.5-pro', 'gemini-2.0-flash', 'gemini-1.5-flash-8b']
 
-function getTestOrMockAnalysis(
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash'
+export const FALLBACK_GEMINI_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-2.5-pro',
+]
+
+export function getModelsToTry(): string[] {
+  const configured = process.env.GEMINI_MODEL?.trim()
+  const primary = configured || DEFAULT_GEMINI_MODEL
+  const fallbacks = FALLBACK_GEMINI_MODELS.filter((m) => m !== primary)
+  return [primary, ...fallbacks]
+}
+
+export function getTestOrMockAnalysis(
   title?: string,
   description?: string,
   imageBase64?: string
@@ -199,21 +233,13 @@ Examine this photograph (and any optional citizen title or description context p
 Return ONLY a raw JSON object matching the schema. No markdown code blocks, no backticks, no markdown formatting.`
 
   try {
-    const genAI = new GoogleGenerativeAI(apiKey)
-    const modelsToTry = [PRIMARY_MODEL, ...FALLBACK_MODELS]
+    const aiClient = new GoogleGenAI({ apiKey })
+    const modelsToTry = getModelsToTry()
     let lastError: any = null
     let responseText = ''
 
     for (const modelName of modelsToTry) {
       try {
-        const model = genAI.getGenerativeModel({
-          model: modelName,
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: 'application/json',
-          },
-        })
-
         const contentParts: any[] = [{ text: prompt }]
 
         if (title?.trim() || description?.trim()) {
@@ -234,16 +260,25 @@ Return ONLY a raw JSON object matching the schema. No markdown code blocks, no b
           }
         }
 
-        const result = await model.generateContent(contentParts)
-        responseText = result.response.text()
+        const result = await aiClient.models.generateContent({
+          model: modelName,
+          contents: contentParts,
+          config: {
+            temperature: 0.1,
+            responseMimeType: 'application/json',
+          },
+        })
+
+        responseText = result.text || ''
         if (responseText) {
           break // Successfully generated
         }
       } catch (callErr: any) {
         lastError = callErr
-        const status = callErr?.status || callErr?.statusCode
-        // If 404 (model deprecated/not available), try fallback model
-        if (status === 404) {
+        const status = callErr?.status || callErr?.statusCode || callErr?.code
+        const msg = String(callErr?.message || '').toLowerCase()
+        // If 404 (model deprecated, retired, or not available), try next fallback model
+        if (status === 404 || msg.includes('404') || msg.includes('not found') || msg.includes('is not supported')) {
           continue
         }
         // For other fatal errors (auth, quota, network), fail fast
@@ -287,7 +322,7 @@ Return ONLY a raw JSON object matching the schema. No markdown code blocks, no b
     }
   } catch (err: any) {
     const rawMsg = (err?.message || '').toLowerCase()
-    const errStatus = err?.status || err?.statusCode
+    const errStatus = err?.status || err?.statusCode || err?.code
 
     if (
       errStatus === 400 ||
@@ -295,7 +330,9 @@ Return ONLY a raw JSON object matching the schema. No markdown code blocks, no b
       errStatus === 403 ||
       rawMsg.includes('api key not valid') ||
       rawMsg.includes('api_key_invalid') ||
-      rawMsg.includes('unauthorized')
+      rawMsg.includes('invalid_argument') ||
+      rawMsg.includes('unauthorized') ||
+      rawMsg.includes('permission_denied')
     ) {
       const authErr = new Error(
         'Google Gemini API authentication failed. The provided API key is invalid or unauthorized. Please verify GEMINI_API_KEY in packages/backend/.env.'

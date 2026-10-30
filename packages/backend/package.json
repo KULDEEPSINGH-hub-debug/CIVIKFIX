@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.12",
+    "@google/genai": "^2.32.0",
     "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^5.10.2",
     "@types/bcryptjs": "^2.4.6",

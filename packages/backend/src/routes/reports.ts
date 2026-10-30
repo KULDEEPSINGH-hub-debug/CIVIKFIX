@@ -509,8 +509,18 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response, n
     const finalCity = data.city || (geo.city !== 'Unknown' ? geo.city : 'Jaipur')
     const finalState = data.state || (geo.state !== 'Unknown' ? geo.state : 'Rajasthan')
 
-    // AI analysis
-    const ai = await analyzeReport(data.title, data.description)
+    // AI analysis (failsafe: preserve manual report submission when AI is unavailable)
+    let ai: any = {
+      category: data.category,
+      severity: data.severity || 'MEDIUM',
+      description: data.description,
+      confidence: 0,
+    }
+    try {
+      ai = await analyzeReport(data.title, data.description)
+    } catch {
+      // AI analysis failure must NOT block manual citizen report submission
+    }
 
     // Generate public ID
     const publicId = await generatePublicId()
