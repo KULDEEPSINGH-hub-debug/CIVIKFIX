@@ -7,6 +7,12 @@ import request from 'supertest'
 import app from '../server'
 
 describe('CivicFix REST API Test Suite', () => {
+  it('Ensure demo accounts and departments are safely provisioned', async () => {
+    const { initDemoAccounts } = require('../lib/demoAccounts')
+    const result = await initDemoAccounts({ force: true })
+    assert.strictEqual(result.provisioned, true)
+  })
+
   // ─── 1. Health & Discovery Endpoints ────────────────────────────────────────
 
   it('GET /api/health should return ok status and demo flag', async () => {
@@ -699,5 +705,171 @@ describe('CivicFix REST API Test Suite', () => {
       if (originalApiSecret) process.env.CLOUDINARY_API_SECRET = originalApiSecret
       else delete process.env.CLOUDINARY_API_SECRET
     }
+  })
+
+  // ─── 8. Authority Authentication & Directory Lifecycle ────────────────────────
+
+  it('Authority login: rejects invalid password with 401 INVALID_CREDENTIALS', async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/authority/login')
+      .send({ email: 'demo-authority@civicfix.demo', password: 'WrongPassword999!' })
+    assert.strictEqual(res.status, 401)
+    assert.strictEqual(res.body.success, false)
+    assert.strictEqual(res.body.error.code, 'INVALID_CREDENTIALS')
+  })
+
+  it('Authority login: succeeds with valid demo authority credentials', async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/authority/login')
+      .send({ email: 'demo-authority@civicfix.demo', password: 'DemoAuthority123!' })
+    assert.strictEqual(res.status, 200)
+    assert.strictEqual(res.body.success, true)
+    assert.strictEqual(res.body.data.user.role, 'AUTHORITY')
+    assert.strictEqual(res.body.data.user.email, 'demo-authority@civicfix.demo')
+    assert.ok(res.headers['set-cookie'], 'Must set session cookie')
+  })
+
+  it('Authority directory: returns active verified departments with non-zero count', async () => {
+    const res = await request(app).get('/api/v1/authority/directory')
+    assert.strictEqual(res.status, 200)
+    assert.strictEqual(res.body.success, true)
+    const depts = res.body.data.departments
+    assert.ok(Array.isArray(depts))
+    assert.ok(depts.length >= 4, `Expected at least 4 departments, found ${depts.length}`)
+    const pwdDept = depts.find((d: any) => d.type === 'PWD' || d.name.includes('Road'))
+    assert.ok(pwdDept, 'PWD / Road department must exist in directory')
+    assert.ok(pwdDept.categories.includes('ROAD_DAMAGE'))
+  })
+
+  it('Smart authority finder: routes road damage on highway to PWD with HIGH confidence', async () => {
+    const res = await request(app).get(
+      '/api/v1/authority/find?category=ROAD_DAMAGE&city=Jaipur&road=NH-48%20Expressway'
+    )
+    assert.strictEqual(res.status, 200)
+    assert.strictEqual(res.body.success, true)
+    assert.strictEqual(res.body.data.confidence, 'HIGH')
+    assert.strictEqual(res.body.data.isFallback, false)
+    assert.ok(res.body.data.primaryAuthority)
+    assert.strictEqual(res.body.data.primaryAuthority.type, 'PWD')
+  })
+
+  it('Smart authority finder: falls back to General Municipal Grievance Cell for unmapped category', async () => {
+    const res = await request(app).get(
+      '/api/v1/authority/find?category=UNKNOWN_CUSTOM_ISSUE&city=Jaipur'
+    )
+    assert.strictEqual(res.status, 200)
+    assert.strictEqual(res.body.success, true)
+    assert.strictEqual(res.body.data.isFallback, true)
+    assert.strictEqual(res.body.data.confidence, 'LOW')
+    assert.ok(res.body.data.primaryAuthority)
+    assert.ok(/grievance|municipal/i.test(res.body.data.primaryAuthority.name))
+  })
+
+  it('Complete authority lifecycle end-to-end: apply -> admin approve -> directory -> login -> report routing -> dashboard -> status update', async () => {
+    const timestamp = Date.now()
+    const officerEmail = `officer-${timestamp}@civicfix.demo`
+    const deptName = `Civil Aviation & Helipad Division ${timestamp}`
+
+    // 1. New authority applicant submits application
+    const applyRes = await request(app)
+      .post('/api/v1/auth/authority/apply')
+      .send({
+        applicantName: 'Chief Flight Inspector',
+        designation: 'Division Head',
+        department: deptName,
+        officialEmail: officerEmail,
+        officeLocation: 'Terminal 2, Jaipur Airport',
+        requestedJurisdiction: 'Jaipur Municipal Corporation',
+        requestedResponsibilities: 'Helipad clearance, runway hazards, and low-altitude bird menace mitigation.',
+        password: 'OfficerSecurePass123!',
+      })
+    assert.strictEqual(applyRes.status, 201)
+    assert.strictEqual(applyRes.body.success, true)
+    const newUserId = applyRes.body.data.user.id
+
+    // 2. Admin logs in
+    const adminAgent = request.agent(app)
+    const adminLoginRes = await adminAgent
+      .post('/api/v1/auth/login')
+      .send({ email: 'demo-admin@civicfix.demo', password: 'DemoAdmin123!' })
+    assert.strictEqual(adminLoginRes.status, 200)
+
+    // 3. Admin fetches pending applications and locates the new applicant
+    const appsRes = await adminAgent.get('/api/v1/admin/applications?status=PENDING_VERIFICATION')
+    assert.strictEqual(appsRes.status, 200)
+    const targetApp = appsRes.body.data.applications.find((a: any) => a.userId === newUserId)
+    assert.ok(targetApp, 'Admin should find the submitted application')
+
+    // 4. Admin approves the application (assigning to demo-dept-001)
+    const approveRes = await adminAgent
+      .patch(`/api/v1/admin/applications/${targetApp.id}`)
+      .send({
+        status: 'APPROVED',
+        reviewNotes: 'Verified official credentials and identity.',
+        departmentId: 'demo-dept-001',
+      })
+    assert.strictEqual(approveRes.status, 200)
+    assert.strictEqual(approveRes.body.data.application.status, 'APPROVED')
+
+    // 5. Approved authority logs in
+    const officerAgent = request.agent(app)
+    const officerLoginRes = await officerAgent
+      .post('/api/v1/auth/authority/login')
+      .send({ email: officerEmail, password: 'OfficerSecurePass123!' })
+    assert.strictEqual(officerLoginRes.status, 200)
+    assert.strictEqual(officerLoginRes.body.data.user.role, 'AUTHORITY')
+
+    // 6. Citizen submits a road damage report in Jaipur
+    const citizenAgent = request.agent(app)
+    await citizenAgent
+      .post('/api/v1/auth/login')
+      .send({ email: 'demo-citizen@civicfix.demo', password: 'DemoCitizen123!' })
+
+    const reportRes = await citizenAgent.post('/api/v1/reports').send({
+      title: `Dangerous Asphalt Subsidence ${timestamp}`,
+      description: 'Massive crater in main lane blocking bus transit near central junction.',
+      category: 'ROAD_DAMAGE',
+      severity: 'CRITICAL',
+      latitude: 26.9124,
+      longitude: 75.7873,
+      address: 'Main Arterial Road, Near Sindhi Camp, Jaipur',
+    })
+    assert.strictEqual(reportRes.status, 201)
+    const reportId = reportRes.body.data.id
+    const reportPublicId = reportRes.body.data.publicId
+    assert.strictEqual(reportRes.body.data.suggestedDeptId, 'demo-dept-001')
+
+    // 7. Officer checks authority dashboard reports - the report is visible!
+    const officerReportsRes = await officerAgent.get('/api/v1/authority/reports')
+    assert.strictEqual(officerReportsRes.status, 200)
+    const assignedReport = officerReportsRes.body.data.reports.find((r: any) => r.id === reportId)
+    assert.ok(assignedReport, 'Report routed to demo-dept-001 must appear on officer dashboard')
+
+    // 8. Officer transitions report status: REPORTED -> UNDER_REVIEW -> IN_PROGRESS
+    const reviewStatusRes = await officerAgent
+      .patch(`/api/v1/authority/reports/${reportId}/status`)
+      .send({
+        status: 'UNDER_REVIEW',
+        reason: 'PWD officer reviewed and accepted the report.',
+      })
+    assert.strictEqual(reviewStatusRes.status, 200)
+    assert.strictEqual(reviewStatusRes.body.data.report.status, 'UNDER_REVIEW')
+
+    const progressStatusRes = await officerAgent
+      .patch(`/api/v1/authority/reports/${reportId}/status`)
+      .send({
+        status: 'IN_PROGRESS',
+        reason: 'PWD maintenance crew dispatched with asphalt compactor.',
+      })
+    assert.strictEqual(progressStatusRes.status, 200)
+    assert.strictEqual(progressStatusRes.body.data.report.status, 'IN_PROGRESS')
+
+    // 9. Citizen tracks the report and sees the status update
+    const trackingRes = await request(app).get(`/api/v1/reports/${reportPublicId}`)
+    assert.strictEqual(trackingRes.status, 200)
+    assert.strictEqual(trackingRes.body.data.status, 'IN_PROGRESS')
+    assert.ok(
+      trackingRes.body.data.statusHistory.some((h: any) => h.newStatus === 'IN_PROGRESS')
+    )
   })
 })

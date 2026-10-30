@@ -16,6 +16,7 @@
     "db:migrate:pg": "prisma migrate deploy --schema=prisma/schema.postgresql.prisma",
     "db:migrate-to-pg": "ts-node scripts/migrate-to-pg.ts",
     "db:seed": "ts-node prisma/seed.ts",
+    "seed:demo": "ts-node src/lib/demoAccounts.ts",
     "db:reset": "prisma migrate reset --force",
     "test:check": "tsc --noEmit -p tsconfig.test.json"
   },

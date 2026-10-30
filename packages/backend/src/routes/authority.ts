@@ -4,6 +4,7 @@ import { z } from 'zod'
 import prisma from '../lib/prisma'
 import { requireApprovedAuthority, requireAuth } from '../middleware/auth'
 import { getUploadsDir, uploadEvidenceFile } from '../lib/storage'
+import { matchAuthorityDepartment } from '../lib/routingEngine'
 import type { AuthenticatedRequest } from '../types'
 import { ReportStatus } from '../types'
 
@@ -59,10 +60,10 @@ router.get('/directory', async (_req: Request, res: Response, next: NextFunction
   }
 })
 
-// GET /api/v1/authority/find - Smart Authority Finder based on category & coordinates
+// GET /api/v1/authority/find - Smart Authority Finder based on category, location & road
 router.get('/find', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { category, city, latitude, longitude } = req.query as Record<string, string>
+    const { category, city, latitude, longitude, address, road } = req.query as Record<string, string>
 
     if (!category) {
       res.status(400).json({
@@ -72,72 +73,21 @@ router.get('/find', async (req: Request, res: Response, next: NextFunction) => {
       return
     }
 
-    // Match departments supporting this category
-    const departments = await prisma.department.findMany({
-      where: {
-        isActive: true,
-        categories: { contains: category },
-      },
-      include: {
-        authorityDirectory: true,
-      },
+    const latNum = latitude ? parseFloat(latitude) : undefined
+    const lngNum = longitude ? parseFloat(longitude) : undefined
+
+    const result = await matchAuthorityDepartment({
+      category,
+      city,
+      latitude: Number.isFinite(latNum) ? latNum : undefined,
+      longitude: Number.isFinite(lngNum) ? lngNum : undefined,
+      address,
+      road,
     })
-
-    if (departments.length === 0) {
-      // Fallback to generic municipality
-      const fallback = await prisma.department.findFirst({
-        where: { isActive: true },
-      })
-
-      res.json({
-        success: true,
-        data: {
-          confidence: 'LOW',
-          confidenceExplanation: 'No specific department directly mapped to this category. Routed to Municipal Corporation general grievance cell.',
-          primaryAuthority: fallback || null,
-          alternativeAuthorities: [],
-          disclaimer: 'CivicFix suggests responsible authorities based on published municipal jurisdiction rules. Official determination may vary depending on road ownership or state vs local jurisdiction.',
-        },
-      })
-      return
-    }
-
-    // Filter by city if supplied
-    let primary = departments[0]
-    if (city) {
-      const cityMatch = departments.find((d) => d.city.toLowerCase() === city.toLowerCase())
-      if (cityMatch) primary = cityMatch
-    }
-
-    const alternatives = departments.filter((d) => d.id !== primary.id)
 
     res.json({
       success: true,
-      data: {
-        confidence: city ? 'HIGH' : 'MODERATE',
-        confidenceExplanation: city
-          ? `Verified match for ${category.replace(/_/g, ' ')} under ${primary.name} in ${primary.city}.`
-          : `Probable match for ${category.replace(/_/g, ' ')} under ${primary.name}. Needs city boundary confirmation.`,
-        primaryAuthority: {
-          id: primary.id,
-          name: primary.name,
-          type: primary.type,
-          city: primary.city,
-          state: primary.state,
-          websiteUrl: primary.websiteUrl,
-          contactEmail: primary.contactEmail,
-          contactPhone: primary.contactPhone,
-          portalUrl: primary.authorityDirectory[0]?.officialPortalUrl || primary.websiteUrl,
-          lastVerifiedAt: primary.authorityDirectory[0]?.lastVerifiedAt,
-        },
-        alternativeAuthorities: alternatives.map((a) => ({
-          id: a.id,
-          name: a.name,
-          city: a.city,
-          portalUrl: a.authorityDirectory[0]?.officialPortalUrl || a.websiteUrl,
-        })),
-        disclaimer: 'CivicFix independent authority discovery engine. Not an official endorsement.',
-      },
+      data: result,
     })
   } catch (err) {
     next(err)

@@ -8,6 +8,7 @@ import { analyzeReport } from '../lib/ai'
 import { reverseGeocode } from '../lib/geocoding'
 import { generatePublicId } from '../lib/publicId'
 import { getUploadsDir, getFileSizeBytes, uploadEvidenceFile } from '../lib/storage'
+import { matchAuthorityDepartment } from '../lib/routingEngine'
 import type { AuthenticatedRequest } from '../types'
 import { IssueCategory, Severity, ReportStatus } from '../types'
 
@@ -525,22 +526,16 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response, n
     // Generate public ID
     const publicId = await generatePublicId()
 
-    // Find suggested department based on category & city, with category fallback
-    let suggestedDept = await prisma.department.findFirst({
-      where: {
-        categories: { contains: data.category },
-        isActive: true,
-        city: { contains: finalCity },
-      },
+    // Find suggested department based on category, road, and city jurisdiction rules
+    const routeMatch = await matchAuthorityDepartment({
+      category: data.category,
+      city: finalCity,
+      latitude: data.latitude,
+      longitude: data.longitude,
+      road: geo.road,
+      address: finalAddress,
     })
-    if (!suggestedDept) {
-      suggestedDept = await prisma.department.findFirst({
-        where: {
-          categories: { contains: data.category },
-          isActive: true,
-        },
-      })
-    }
+    const suggestedDept = routeMatch.primaryAuthority
 
     const report = await prisma.report.create({
       data: {

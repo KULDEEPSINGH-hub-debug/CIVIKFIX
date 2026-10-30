@@ -170,6 +170,26 @@ router.patch('/applications/:id', async (req: AuthenticatedRequest, res: Respons
             jurisdictionId: jurisdictionId || null,
           },
         })
+
+        // Ensure department has an active AuthorityDirectory entry so it appears in the public directory
+        const existingDir = await tx.authorityDirectory.findFirst({
+          where: { departmentId: targetDeptId },
+        })
+        if (!existingDir) {
+          await tx.authorityDirectory.create({
+            data: {
+              departmentId: targetDeptId,
+              isActive: true,
+              dataSource: 'ADMIN_APPROVED',
+              lastVerifiedAt: new Date(),
+            },
+          })
+        } else if (!existingDir.isActive) {
+          await tx.authorityDirectory.update({
+            where: { id: existingDir.id },
+            data: { isActive: true, lastVerifiedAt: new Date() },
+          })
+        }
       } else if (status === 'REJECTED' || status === 'SUSPENDED' || status === 'REVOKED') {
         // Demote user back to citizen role if revoked
         await tx.user.update({

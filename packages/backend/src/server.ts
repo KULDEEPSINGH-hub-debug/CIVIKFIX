@@ -161,12 +161,22 @@ app.use(errorHandler)
 
 // Start server
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => {
+  app.listen(PORT, async () => {
     console.log(`[CivicFix API] Server running at http://localhost:${PORT}`)
     console.log(`[CivicFix API] Environment: ${process.env.NODE_ENV || 'development'}`)
     console.log(`[CivicFix API] Health check: http://localhost:${PORT}/api/health`)
     const hasKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0)
     console.log(`[CivicFix API] Gemini Vision configured: ${hasKey}`)
+
+    // Run safe demo account provisioning if enabled
+    if (process.env.ENABLE_DEMO_ACCOUNTS === 'true' || process.env.DEMO_MODE === 'true') {
+      try {
+        const { initDemoAccounts } = await import('./lib/demoAccounts')
+        await initDemoAccounts()
+      } catch (demoErr) {
+        console.error('[CivicFix Demo] Failed to initialize demo accounts:', demoErr)
+      }
+    }
   })
 }
 

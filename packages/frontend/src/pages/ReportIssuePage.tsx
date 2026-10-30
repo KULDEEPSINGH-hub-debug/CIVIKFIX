@@ -85,6 +85,7 @@ export default function ReportIssuePage() {
   const [address, setAddress] = useState<string>('Civic Center Road, Near Central Bus Stand, Jaipur')
   const [landmark, setLandmark] = useState<string>('')
   const [detectingGps, setDetectingGps] = useState<boolean>(false)
+  const [detectedCity, setDetectedCity] = useState<string>('Jaipur')
 
   // Step 4: Suggested Authority
   const [suggestedDept, setSuggestedDept] = useState<{
@@ -94,6 +95,7 @@ export default function ReportIssuePage() {
     city: string
     confidence?: string
     explanation?: string
+    isFallback?: boolean
   } | null>(null)
   const [loadingAuthority, setLoadingAuthority] = useState<boolean>(false)
 
@@ -273,6 +275,9 @@ export default function ReportIssuePage() {
           const res = await api.post('/reports/reverse-geocode', { latitude: lat, longitude: lng })
           if (res.data.success && res.data.data?.address) {
             setAddress(res.data.data.address)
+            if (res.data.data.city && res.data.data.city !== 'Unknown') {
+              setDetectedCity(res.data.data.city)
+            }
             if (res.data.data.landmark && !landmark) {
               setLandmark(res.data.data.landmark)
             }
@@ -299,20 +304,29 @@ export default function ReportIssuePage() {
     if (currentStep === 4) {
       setLoadingAuthority(true)
       api
-        .get('/authority/find', { params: { category, latitude, longitude } })
+        .get('/authority/find', {
+          params: {
+            category,
+            latitude,
+            longitude,
+            city: detectedCity || address,
+            address,
+          },
+        })
         .then((res) => {
-          if (res.data.success && res.data.data.primaryAuthority) {
+          if (res.data.success && res.data.data?.primaryAuthority) {
             setSuggestedDept({
               ...res.data.data.primaryAuthority,
               confidence: res.data.data.confidence,
               explanation: res.data.data.confidenceExplanation,
+              isFallback: res.data.data.isFallback,
             })
           }
         })
         .catch(console.error)
         .finally(() => setLoadingAuthority(false))
     }
-  }, [currentStep, category, latitude, longitude])
+  }, [currentStep, category, latitude, longitude, detectedCity, address])
 
   // Check for duplicates on Step 5
   useEffect(() => {
@@ -927,10 +941,14 @@ export default function ReportIssuePage() {
                   <LoadingSpinner message="Matching responsible department..." />
                 </div>
               ) : suggestedDept ? (
-                <Card className="bg-white border-2 border-civic-blue p-5">
+                <Card className={`bg-white border-2 p-5 ${suggestedDept.isFallback ? 'border-amber-400 bg-amber-50/20' : 'border-civic-blue'}`}>
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-[10px] font-bold bg-green-100 text-success px-2 py-0.5 rounded uppercase">
-                      {suggestedDept.confidence || 'HIGH'} Confidence Match
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
+                      suggestedDept.isFallback || suggestedDept.confidence === 'LOW'
+                        ? 'bg-amber-100 text-amber-800'
+                        : 'bg-green-100 text-success'
+                    }`}>
+                      {suggestedDept.isFallback ? 'General Municipal Fallback' : `${suggestedDept.confidence || 'HIGH'} Confidence Match`}
                     </span>
                     <span className="text-xs text-text-secondary font-medium">
                       City: {suggestedDept.city}
@@ -942,9 +960,13 @@ export default function ReportIssuePage() {
                     Department Type: <strong className="text-text-primary">{suggestedDept.type}</strong>
                   </p>
 
-                  <div className="mt-3 p-2.5 bg-page-bg rounded border border-border text-xs text-text-secondary">
+                  <div className={`mt-3 p-2.5 rounded border text-xs ${
+                    suggestedDept.isFallback ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-page-bg border-border text-text-secondary'
+                  }`}>
                     {suggestedDept.explanation ||
-                      'Matched via municipal charter for this problem classification.'}
+                      (suggestedDept.isFallback
+                        ? 'No specialized authority registered for this exact location. The report will be dispatched to the General Municipal Grievance Cell.'
+                        : 'Matched via municipal charter for this problem classification.')}
                   </div>
                 </Card>
               ) : (
